@@ -10,3 +10,5 @@
 __pycache__
 
 opf.py
+
+*.sol

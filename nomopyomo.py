@@ -19,7 +19,7 @@ Pyomo. No more Pyomo."""
 
 
 
-from pypsa.descriptors import get_switchable_as_dense
+from pypsa.descriptors import get_switchable_as_dense, allocate_series_dataframes
 from pypsa.pf import _as_snapshots
 
 import pandas as pd
@@ -27,6 +27,7 @@ import numpy as np
 
 from scipy.sparse import lil_matrix, vstack, hstack, coo_matrix
 
+import os
 
 def add_variables(network,group,variables):
     """
@@ -311,6 +312,53 @@ def problem_to_lp(network,filename):
     f.close()
 
 
+def run_cbc(filename,sol_filename):
+    options = "" #-dualsimplex -primalsimplex
+    command = "cbc -printingOptions all -import {} -stat=1 -solve {} -solu {}".format(filename,options,sol_filename)
+    print("Running command:")
+    print(command)
+    os.system(command)
+
+
+def read_cbc(network,sol_filename):
+    f = open(sol_filename,"r")
+    data = f.readline()
+    print(data)
+    f.close()
+    sol = pd.read_csv(sol_filename,header=None,skiprows=1,sep=r"\s+")
+
+    variables = sol.index[sol[1].str[:1] == "x"]
+    variables_sol = sol.loc[variables,2].astype(float)
+    variables_sol.index = sol.loc[variables,1].str[1:].astype(int)
+
+    network.variables["sol"] = network.variables["i"].map(variables_sol)
+
+
+def assign_solution(network,snapshots):
+
+    allocate_series_dataframes(network, {'Generator': ['p'],
+                                         'Load': ['p'],
+                                         'StorageUnit': ['p', 'state_of_charge', 'spill'],
+                                         'Store': ['p', 'e'],
+                                         'Bus': ['p', 'v_ang', 'v_mag_pu', 'marginal_price'],
+                                         'Line': ['p0', 'p1', 'mu_lower', 'mu_upper'],
+                                         'Transformer': ['p0', 'p1', 'mu_lower', 'mu_upper'],
+                                         'Link': ["p"+col[3:] for col in network.links.columns if col[:3] == "bus"]
+                                                  +['mu_lower', 'mu_upper']})
+
+    network.generators_t.p.loc[snapshots] = network.variables.loc["gen-p","sol"].unstack(level=0)
+
+    network.links_t.p0.loc[snapshots] = network.variables.loc["link-p","sol"].unstack(level=0)
+    efficiency = get_switchable_as_dense(network, 'Link', 'efficiency', snapshots)
+    network.links_t.p1.loc[snapshots] = -network.links_t.p0.loc[snapshots]*efficiency.loc[snapshots,:]
+
+
+    network.generators.p_nom_opt = network.generators.p_nom
+    network.generators.loc[network.generators.p_nom_extendable,"p_nom_opt"] = network.variables.loc["gen-p_nom","sol"].groupby(level=0).sum()
+
+    network.links.p_nom_opt = network.links.p_nom
+    network.links.loc[network.links.p_nom_extendable,"p_nom_opt"] = network.variables.loc["link-p_nom","sol"].groupby(level=0).sum()
+
 
 
 def prepare_lopf_problem(network,snapshots):
@@ -324,10 +372,16 @@ def prepare_lopf_problem(network,snapshots):
    define_linear_objective(network,snapshots)
 
 
-def network_lopf(network, snapshots=None, solver_name="clp"):
+def network_lopf(network, snapshots=None, solver_name="cbc"):
 
     snapshots = _as_snapshots(network, snapshots)
 
     prepare_lopf_problem(network,snapshots)
 
     problem_to_lp(network,"test.lp")
+
+    if solver_name == "cbc":
+        run_cbc("test.lp","test.sol")
+        read_cbc(network,"test.sol")
+
+    assign_solution(network,snapshots)
