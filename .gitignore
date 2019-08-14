@@ -1,0 +1,12 @@
+
+*.org
+
+*.ipynb
+
+*.log
+
+*.lp
+
+__pycache__
+
+opf.py
