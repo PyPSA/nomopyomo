@@ -14,14 +14,13 @@ The script builds:
 Then writes a .lp file for the problem, solves it, and reads back in
 the solution.
 
-The script currently works for Load, Generator and Link components,
-and with the solver cbc/clp.
+The script currently works for Load, Generator, Link and Store
+components, and with the solver cbc/clp.
 
 TODO:
 
-- integrate Store component
 - integrate Line component
-- integrate kirchhoff formulation for linear power flow
+- integrate Kirchhoff formulation for linear power flow
 - implement gurobi solver
 - implement glpk solver
 - allow extra functionality
