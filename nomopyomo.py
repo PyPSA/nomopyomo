@@ -28,6 +28,8 @@ import datetime as dt
 
 import os
 
+import gc
+
 now = dt.datetime.now()
 
 def add_variables(network,group,variables):
@@ -272,7 +274,7 @@ def define_linear_objective(network,snapshots):
 
         mc = get_switchable_as_dense(network, component, 'marginal_cost', snapshots).multiply(network.snapshot_weightings[snapshots],axis=0)
         if len(df) > 0:
-            network.variables.loc[("{}-{}".format(component,attr),df.index,snapshots),"obj"] = pd.concat([mc.stack().swaplevel()], keys=["{}-{}".format(component,attr)], names=["group"])
+            network.variables.loc[("{}-p".format(component),df.index,snapshots),"obj"] = pd.concat([mc.stack().swaplevel()], keys=["{}-p".format(component)], names=["group"])
 
     #TODO include constant term
 
@@ -281,18 +283,19 @@ def problem_to_lp(network,filename):
 
     f = open(filename, 'w')
     f.write('\\* LOPF \*\\n\nmin\nobj:\n')
-    for var in network.variables.index:
-        coeff = network.variables.at[var,"obj"]
-        f.write("{}{} x{}\n".format("+" if coeff >= 0 else "",coeff,network.variables.at[var,"i"]))
+
+    obj = network.variables.obj.values
+    for i in range(len(network.variables)):
+        coeff = obj[i]
+        #if coeff == 0:
+        #    continue
+        f.write("{}{} x{}\n".format("+" if coeff >= 0 else "",coeff,i))
 
     f.write("\n\ns.t.\n\n")
 
 
-    i_sense = network.constraints.columns.get_loc("sense")
-    i_rhs = network.constraints.columns.get_loc("sense")
     sense = network.constraints.sense.str.replace("==","=").values
     rhs = network.constraints.rhs.values
-
     for i in range(len(network.constraints)):
         f.write("c{}:\n".format(i))
         for j,coeff in network.constraint_matrix[i].items():
@@ -303,10 +306,10 @@ def problem_to_lp(network,filename):
 
     f.write("\nbounds\n")
 
-    for var in network.variables.index:
-        f.write("{} <= x{} <= {}\n".format(network.variables.at[var,"lower"],
-                                           network.variables.at[var,"i"],
-                                           network.variables.at[var,"upper"]))
+    lower = network.variables.lower.values
+    upper = network.variables.upper.values
+    for i in range(len(network.variables)):
+        f.write("{} <= x{} <= {}\n".format(lower[i],i,upper[i]))
 
     f.write("end\n")
     f.close()
@@ -389,8 +392,10 @@ def network_lopf(network, snapshots=None, solver_name="cbc"):
 
     print("before prep",dt.datetime.now()-now)
     prepare_lopf_problem(network,snapshots)
+    gc.collect()
     print("before write file",dt.datetime.now()-now)
     problem_to_lp(network,"test.lp")
+    gc.collect()
     print("before run",dt.datetime.now()-now)
 
     if solver_name == "cbc":
@@ -398,6 +403,8 @@ def network_lopf(network, snapshots=None, solver_name="cbc"):
         print("before read",dt.datetime.now()-now)
         read_cbc(network,"test.sol")
 
+    gc.collect()
     print("before assign",dt.datetime.now()-now)
     assign_solution(network,snapshots)
     print("end",dt.datetime.now()-now)
+    gc.collect()
