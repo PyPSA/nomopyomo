@@ -86,7 +86,7 @@ def add_constraints(network,group,constraints):
     #network.constraints = network.constraints.sort_index()
 
 
-def extendable_attribute_constraints(network,snapshots,component,attr):
+def extendable_attribute_constraints(network,snapshots,component,attr,marginal_cost=True):
 
     df = getattr(network,network.components[component]["list_name"])
 
@@ -100,7 +100,7 @@ def extendable_attribute_constraints(network,snapshots,component,attr):
 
     variables = pd.DataFrame(index=pd.MultiIndex.from_product([df.index,snapshots],
                                                               names=["name","snapshot"]),
-                             columns=["lower","upper"],
+                             columns=["lower","upper","obj"],
                              dtype=float)
 
     if len(fix) > 0:
@@ -110,16 +110,23 @@ def extendable_attribute_constraints(network,snapshots,component,attr):
     variables.loc[(ext,snapshots),"lower"] = -np.inf
     variables.loc[(ext,snapshots),"upper"] = np.inf
 
+    if marginal_cost and len(df) > 0:
+        mc = get_switchable_as_dense(network, component, 'marginal_cost', snapshots).multiply(network.snapshot_weightings[snapshots],axis=0)
+        variables["obj"] = mc.stack().swaplevel()
+    else:
+        variables["obj"] = 0.
+
     add_variables(network,"{}-{}".format(component,attr),variables)
 
 
     if len(ext) > 0:
         variables = pd.DataFrame(index=ext,
-                                 columns=["lower","upper"],
+                                 columns=["lower","upper","obj"],
                                  dtype=float)
 
         variables.loc[ext,"lower"] = df.loc[ext,attr+"_nom_min"]
         variables.loc[ext,"upper"] = df.loc[ext,attr+"_nom_max"]
+        variables.loc[ext,"obj"] = df.loc[ext,"capital_cost"]
 
         add_variables(network,"{}-{}_nom".format(component,attr),variables)
 
@@ -172,15 +179,18 @@ def define_store_constraints(network,snapshots):
 
     variables = pd.DataFrame(index=pd.MultiIndex.from_product([network.stores.index,snapshots],
                                                               names=["name","snapshot"]),
-                             columns=["lower","upper"],
+                             columns=["lower","upper","obj"],
                              dtype=float)
 
     variables["lower"] = -np.inf
     variables["upper"] = np.inf
+    mc = get_switchable_as_dense(network, "Store", 'marginal_cost', snapshots).multiply(network.snapshot_weightings[snapshots],axis=0)
+    if len(network.stores) > 0:
+        variables["obj"] = mc.stack().swaplevel()
 
     add_variables(network,"Store-p",variables)
 
-    extendable_attribute_constraints(network,snapshots,"Store","e")
+    extendable_attribute_constraints(network,snapshots,"Store","e",marginal_cost=False)
 
     ## Builds the constraint -e_now + e_previous - p == 0 ##
 
@@ -257,27 +267,6 @@ def define_nodal_balance_constraints(network,snapshots):
     add_constraints(network,"nodal_balance",constraints)
 
     #TODO include multi-link
-
-def define_linear_objective(network,snapshots):
-
-    network.variables["obj"] = 0.
-
-    for component in ["Generator","Link","Store"]:
-        df = getattr(network,network.components[component]["list_name"])
-        attr = "e" if component == "Store" else "p"
-        ext = df.index[df[attr+"_nom_extendable"]]
-        ext.name = "name"
-        cc = pd.concat([df.loc[ext,"capital_cost"]], keys = [pd.NaT], names=["snapshot"]).reorder_levels(["name","snapshot"])
-        cc = pd.concat([cc], keys = ["{}-{}_nom".format(component,attr)], names=["group"])
-        if len(ext) > 0:
-            network.variables.loc[("{}-{}_nom".format(component,attr),ext),"obj"] = cc
-
-        mc = get_switchable_as_dense(network, component, 'marginal_cost', snapshots).multiply(network.snapshot_weightings[snapshots],axis=0)
-        if len(df) > 0:
-            network.variables.loc[("{}-p".format(component),df.index,snapshots),"obj"] = pd.concat([mc.stack().swaplevel()], keys=["{}-p".format(component)], names=["group"])
-
-    #TODO include constant term
-
 
 def problem_to_lp(network,filename):
 
@@ -382,8 +371,6 @@ def prepare_lopf_problem(network,snapshots):
    define_store_constraints(network,snapshots)
    print("before nodal",dt.datetime.now()-now)
    define_nodal_balance_constraints(network,snapshots)
-   print("before obj",dt.datetime.now()-now)
-   define_linear_objective(network,snapshots)
 
 
 def network_lopf(network, snapshots=None, solver_name="cbc"):
