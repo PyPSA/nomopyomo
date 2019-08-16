@@ -75,6 +75,9 @@ def add_constraints(network,group,constraints):
 
     constraints["i"] = range(len(network.constraints),len(network.constraints)+len(constraints))
 
+    if type(constraints.index) is not pd.MultiIndex:
+        constraints = pd.concat([constraints], keys=[pd.NaT], names=['snapshot']).reorder_levels(["name","snapshot"])
+
     constraints = pd.concat([constraints], keys=[group], names=['group'])
 
     network.constraints = pd.concat((network.constraints,constraints),
@@ -276,7 +279,49 @@ def define_nodal_balance_constraints(network,snapshots):
 
     add_constraints(network,"nodal_balance",constraints)
 
-    #TODO include multi-link
+
+
+def define_global_constraints(network,snapshots):
+
+    gcs = network.global_constraints.index
+    gcs.name = "name"
+    constraints = pd.DataFrame(index=gcs,
+                               columns=["sense","rhs"])
+    constraints["i"] = range(len(constraints))
+
+    for k,gc in enumerate(gcs):
+        if network.global_constraints.loc[gc,"type"] == "primary_energy":
+            constraints.at[gc,"sense"] = network.global_constraints.loc[gc,"sense"]
+            constraints.at[gc,"rhs"] = network.global_constraints.loc[gc,"constant"]
+
+            i = len(network.constraints) + k
+            network.constraint_matrix[i] = {}
+
+            carrier_attribute = network.global_constraints.loc[gc,"carrier_attribute"]
+
+            for carrier in network.carriers.index:
+                attribute = network.carriers.at[carrier,carrier_attribute]
+                if attribute == 0.:
+                    continue
+                #for generators, use the prime mover carrier
+                gens = network.generators.index[network.generators.carrier == carrier]
+                for gen in gens:
+                    j = network.variables.at[("Generator-p",gen,snapshots[0]),"i"]
+                    for k,sn in enumerate(snapshots):
+                        network.constraint_matrix[i][j+k] =(attribute
+                                                            * (1/network.generators.at[gen,"efficiency"])
+                                                            * network.snapshot_weightings[sn])
+
+                #for stores, inherit the carrier from the bus
+                #take difference of energy at end and start of period
+                stores = network.stores.index[(network.stores.bus.map(network.buses.carrier) == carrier) & (~network.stores.e_cyclic)]
+                for store in stores:
+                    j = network.variables.at[("Store-e",store,snapshots[-1]),"i"]
+                    network.constraint_matrix[i][j] = -attribute
+                    constraints.at[gc,"rhs"] -= attribute*network.stores.at[store,"e_initial"]
+
+    add_constraints(network,"global_constraints",constraints)
+
 
 def problem_to_lp(network,filename):
 
@@ -381,7 +426,8 @@ def prepare_lopf_problem(network,snapshots):
    define_store_constraints(network,snapshots)
    print("before nodal",dt.datetime.now()-now)
    define_nodal_balance_constraints(network,snapshots)
-
+   print("before global",dt.datetime.now()-now)
+   define_global_constraints(network,snapshots)
 
 def network_lopf(network, snapshots=None, solver_name="cbc"):
 
