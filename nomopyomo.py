@@ -107,7 +107,10 @@ def extendable_attribute_constraints(network,snapshots,component,attr,marginal_c
     fix.name = "name"
 
     max_pu = get_switchable_as_dense(network, component, attr+'_max_pu', snapshots)
-    min_pu = get_switchable_as_dense(network, component, attr+'_min_pu', snapshots)
+    if component in network.passive_branch_components:
+        min_pu = -get_switchable_as_dense(network, component, attr+'_max_pu', snapshots)
+    else:
+        min_pu = get_switchable_as_dense(network, component, attr+'_min_pu', snapshots)
 
     variables = pd.DataFrame(index=pd.MultiIndex.from_product([df.index,snapshots],
                                                               names=["name","snapshot"]),
@@ -186,6 +189,59 @@ def define_link_constraints(network,snapshots):
     extendable_attribute_constraints(network,snapshots,"Link","p")
 
 
+def define_passive_branch_constraints(network,snapshots):
+
+    passive_branches = network.passive_branches()
+
+    if len(passive_branches) == 0:
+        return
+
+    extendable_attribute_constraints(network,snapshots,"Line","s",marginal_cost=False)
+    extendable_attribute_constraints(network,snapshots,"Transformer","s",marginal_cost=False)
+
+    for sub_network in network.sub_networks.obj:
+        find_cycles(sub_network)
+
+        #following is necessary to calculate angles post-facto
+        find_bus_controls(sub_network)
+        if len(sub_network.branches_i()) > 0:
+            calculate_B_H(sub_network)
+
+    c = 0
+    for subnetwork in network.sub_networks.obj:
+
+        branches = subnetwork.branches()
+        attribute = "r_pu_eff" if network.sub_networks.at[subnetwork.name,"carrier"] == "DC" else "x_pu_eff"
+        matrix = subnetwork.C.tocsc()
+
+        for col_j in range(matrix.shape[1]):
+            cycle_is = matrix.getcol(col_j).nonzero()[0]
+
+            if len(cycle_is) == 0:  continue
+
+            i = len(network.constraints) + c*len(snapshots)
+            for k,sn in enumerate(snapshots):
+                network.constraint_matrix[i+k] = {}
+
+            for cycle_i in cycle_is:
+                branch_idx = branches.index[cycle_i]
+                attribute_value = 1e5 * branches.at[ branch_idx, attribute] * subnetwork.C[ cycle_i, col_j]
+
+                j = network.variables.at[("{}-s".format(branch_idx[0]),branch_idx[1],snapshots[0]),"i"]
+                for k,sn in enumerate(snapshots):
+                    network.constraint_matrix[i+k][j+k] = attribute_value
+            c+=1
+
+    constraints = pd.DataFrame(index=pd.MultiIndex.from_product([range(c),snapshots],
+                                                                names=["name","snapshot"]),
+                               columns=["sense","rhs"])
+
+    constraints["sense"] = "=="
+    constraints["rhs"] = 0.
+    constraints["i"] = range(len(constraints))
+
+    add_constraints(network,"Cycle",constraints)
+
 def define_store_constraints(network,snapshots):
 
     variables = pd.DataFrame(index=pd.MultiIndex.from_product([network.stores.index,snapshots],
@@ -250,7 +306,7 @@ def define_nodal_balance_constraints(network,snapshots):
 
     for bus in network.buses.index:
         i = len(network.constraints) + constraints.at[(bus,snapshots[0]),"i"]
-        for k,sn in enumerate(snapshots):
+        for k in range(len(snapshots)):
             network.constraint_matrix[i+k] = {}
 
     for component in ["Generator","Store"]:
@@ -284,6 +340,19 @@ def define_nodal_balance_constraints(network,snapshots):
             j = network.variables.at[("Link-p",link,snapshots[0]),"i"]
             for k,sn in enumerate(snapshots):
                 network.constraint_matrix[ii+k][j+k] = efficiency.at[sn,link]
+
+    for component in network.passive_branch_components:
+        df = getattr(network,network.components[component]["list_name"])
+        for unit in df.index:
+            bus0 = df.at[unit,"bus0"]
+            bus1 = df.at[unit,"bus1"]
+            i0 = len(network.constraints) + constraints.at[(bus0,snapshots[0]),"i"]
+            i1 = len(network.constraints) + constraints.at[(bus1,snapshots[0]),"i"]
+            j = network.variables.at[("{}-s".format(component),unit,snapshots[0]),"i"]
+            for k,sn in enumerate(snapshots):
+                network.constraint_matrix[i0+k][j+k] = -1.
+                network.constraint_matrix[i1+k][j+k] = 1.
+
 
     add_constraints(network,"nodal_balance",constraints)
 
@@ -416,12 +485,17 @@ def assign_solution(network,snapshots):
         efficiency = get_switchable_as_dense(network, 'Link', 'efficiency', snapshots)
         network.links_t.p1.loc[snapshots] = -network.links_t.p0.loc[snapshots]*efficiency.loc[snapshots,:]
 
+    for c in network.iterate_components(network.passive_branch_components):
+        c.pnl.p0.loc[snapshots] = network.variables.loc["{}-s".format(c.name),"sol"].unstack(level=0)
+        c.pnl.p1.loc[snapshots] = - c.pnl.p0.loc[snapshots]
+
     for component in ["Generator","Link","Store"]:
         df = getattr(network,network.components[component]["list_name"])
         attr = "e" if component == "Store" else "p"
         df[attr+"_nom_opt"] = df[attr+"_nom"]
-        if len(df) > 0:
-            df.loc[df[attr+"_nom_extendable"],attr+"_nom_opt"] = network.variables.loc["{}-{}_nom".format(component,attr),"sol"].groupby(level=0).sum()
+        ext = df.index[df[attr+"_nom_extendable"]]
+        if len(ext) > 0:
+            df.loc[ext,attr+"_nom_opt"] = network.variables.loc["{}-{}_nom".format(component,attr),"sol"].groupby(level=0).sum()
 
 
 def prepare_lopf_problem(network,snapshots):
@@ -433,6 +507,8 @@ def prepare_lopf_problem(network,snapshots):
    define_generator_constraints(network,snapshots)
    logger.info("before link %s",dt.datetime.now()-now)
    define_link_constraints(network,snapshots)
+   logger.info("before passive %s",dt.datetime.now()-now)
+   define_passive_branch_constraints(network,snapshots)
    logger.info("before store %s",dt.datetime.now()-now)
    define_store_constraints(network,snapshots)
    logger.info("before nodal %s",dt.datetime.now()-now)

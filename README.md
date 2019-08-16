@@ -14,19 +14,21 @@ The script builds:
 Then writes a .lp file for the problem, solves it, and reads back in
 the solution.
 
-The script currently works for Load, Generator, Link, Store and
-GlobalConstraint components, and with the solver cbc/clp.
+The script currently works for Load, Generator, Link, Line,
+Transformer, Store and GlobalConstraint components, and with the
+solver cbc/clp.
 
 TODO:
 
-- integrate Line component
-- integrate Kirchhoff formulation for linear power flow
 - implement gurobi solver
 - implement glpk solver
 - allow extra functionality
+- constant term in objective function
+- handle non-optimal solutions
+- extract dual variables
 
-No planned support for: Transformer and StorageUnit (replace with
-Store and Links following [this
+No planned support for StorageUnit (replace with Store and Links
+following [this
 example](https://pypsa.org/examples/replace-generator-storage-units-with-store.html)).
 
 # Usage
