@@ -20,7 +20,8 @@ Pyomo. No more Pyomo."""
 
 
 from pypsa.descriptors import get_switchable_as_dense, allocate_series_dataframes
-from pypsa.pf import _as_snapshots
+from pypsa.pf import (calculate_dependent_values, find_slack_bus,
+                 find_bus_controls, calculate_B_H, find_cycles, _as_snapshots)
 
 import pandas as pd
 import numpy as np
@@ -29,6 +30,10 @@ import datetime as dt
 import os
 
 import gc
+
+import logging
+logger = logging.getLogger(__name__)
+
 
 now = dt.datetime.now()
 
@@ -93,6 +98,9 @@ def extendable_attribute_constraints(network,snapshots,component,attr,marginal_c
 
     df = getattr(network,network.components[component]["list_name"])
 
+    if len(df) == 0:
+        return
+
     ext = df.index[df[attr+"_nom_extendable"]]
     ext.name = "name"
     fix = df.index[~df[attr+"_nom_extendable"]]
@@ -113,7 +121,7 @@ def extendable_attribute_constraints(network,snapshots,component,attr,marginal_c
     variables.loc[(ext,snapshots),"lower"] = -np.inf
     variables.loc[(ext,snapshots),"upper"] = np.inf
 
-    if marginal_cost and len(df) > 0:
+    if marginal_cost:
         mc = get_switchable_as_dense(network, component, 'marginal_cost', snapshots).multiply(network.snapshot_weightings[snapshots],axis=0)
         variables["obj"] = mc.stack().swaplevel()
     else:
@@ -284,6 +292,9 @@ def define_nodal_balance_constraints(network,snapshots):
 def define_global_constraints(network,snapshots):
 
     gcs = network.global_constraints.index
+    if len(gcs) == 0:
+        return
+
     gcs.name = "name"
     constraints = pd.DataFrame(index=gcs,
                                columns=["sense","rhs"])
@@ -362,15 +373,15 @@ def problem_to_lp(network,filename):
 def run_cbc(filename,sol_filename):
     options = "" #-dualsimplex -primalsimplex
     command = "cbc -printingOptions all -import {} -stat=1 -solve {} -solu {}".format(filename,options,sol_filename)
-    print("Running command:")
-    print(command)
+    logger.info("Running command:")
+    logger.info(command)
     os.system(command)
 
 
 def read_cbc(network,sol_filename):
     f = open(sol_filename,"r")
     data = f.readline()
-    print(data)
+    logger.info(data)
     f.close()
     sol = pd.read_csv(sol_filename,header=None,skiprows=1,sep=r"\s+")
 
@@ -418,36 +429,100 @@ def prepare_lopf_problem(network,snapshots):
    network.constraints = pd.DataFrame()
    network.constraint_matrix = {}
 
-   print("before gen",dt.datetime.now()-now)
+   logger.info("before gen %s",dt.datetime.now()-now)
    define_generator_constraints(network,snapshots)
-   print("before link",dt.datetime.now()-now)
+   logger.info("before link %s",dt.datetime.now()-now)
    define_link_constraints(network,snapshots)
-   print("before store",dt.datetime.now()-now)
+   logger.info("before store %s",dt.datetime.now()-now)
    define_store_constraints(network,snapshots)
-   print("before nodal",dt.datetime.now()-now)
+   logger.info("before nodal %s",dt.datetime.now()-now)
    define_nodal_balance_constraints(network,snapshots)
-   print("before global",dt.datetime.now()-now)
+   logger.info("before global %s",dt.datetime.now()-now)
    define_global_constraints(network,snapshots)
 
-def network_lopf(network, snapshots=None, solver_name="cbc"):
+def network_lopf(network, snapshots=None, solver_name="cbc",skip_pre=False,formulation="kirchhoff"):
+    """
+    Linear optimal power flow for a group of snapshots.
+
+    Parameters
+    ----------
+    snapshots : list or index slice
+        A list of snapshots to optimise, must be a subset of
+        network.snapshots, defaults to network.snapshots
+    solver_name : string
+        Must be a solver name that pyomo recognises and that is
+        installed, e.g. "glpk", "gurobi"
+    solver_io : string, default None
+        Solver Input-Output option, e.g. "python" to use "gurobipy" for
+        solver_name="gurobi"
+    skip_pre : bool, default False
+        Skip the preliminary steps of computing topology, calculating
+        dependent values and finding bus controls.
+    extra_functionality : callable function
+        This function must take two arguments
+        `extra_functionality(network,snapshots)` and is called after
+        the model building is complete, but before it is sent to the
+        solver. It allows the user to
+        add/change constraints and add/change the objective function.
+    solver_logfile : None|string
+        If not None, sets the logfile option of the solver.
+    solver_options : dictionary
+        A dictionary with additional options that get passed to the solver.
+        (e.g. {'threads':2} tells gurobi to use only 2 cpus)
+    keep_files : bool, default False
+        Keep the files that pyomo constructs from OPF problem
+        construction, e.g. .lp file - useful for debugging
+    formulation : string
+        Formulation of the linear power flow equations to use; must be
+        one of ["angles","cycles","kirchhoff","ptdf"]
+    ptdf_tolerance : float
+        Value below which PTDF entries are ignored
+    free_memory : set, default {'pyomo'}
+        Any subset of {'pypsa', 'pyomo'}. Allows to stash `pypsa` time-series
+        data away while the solver runs (as a pickle to disk) and/or free
+        `pyomo` data after the solution has been extracted.
+    extra_postprocessing : callable function
+        This function must take three arguments
+        `extra_postprocessing(network,snapshots,duals)` and is called after
+        the model has solved and the results are extracted. It allows the user to
+        extract further information about the solution, such as additional shadow prices.
+
+    Returns
+    -------
+    None
+    """
+
+    supported_solvers = ["cbc"]
+    if solver_name not in supported_solvers:
+        raise NotImplementedError("Solver {} not in supported solvers: {}".format(solver_name,supported_solvers))
+
+    if formulation != "kirchhoff":
+        raise NotImplementedError("Only the kirchhoff formulation is supported")
+
+    if not skip_pre:
+        network.determine_network_topology()
+        calculate_dependent_values(network)
+        for sub_network in network.sub_networks.obj:
+            find_slack_bus(sub_network)
+        logger.info("Performed preliminary steps")
 
     snapshots = _as_snapshots(network, snapshots)
 
-    print("before prep",dt.datetime.now()-now)
+    logger.info("before prep %s",dt.datetime.now()-now)
     prepare_lopf_problem(network,snapshots)
     gc.collect()
-    print("before write file",dt.datetime.now()-now)
+    logger.info("before write file %s",dt.datetime.now()-now)
     problem_to_lp(network,"test.lp")
     gc.collect()
-    print("before run",dt.datetime.now()-now)
+    logger.info("before run %s",dt.datetime.now()-now)
 
     if solver_name == "cbc":
         run_cbc("test.lp","test.sol")
-        print("before read",dt.datetime.now()-now)
+        logger.info("before read %s",dt.datetime.now()-now)
         read_cbc(network,"test.sol")
 
     gc.collect()
-    print("before assign",dt.datetime.now()-now)
+    logger.info("before assign %s",dt.datetime.now()-now)
     assign_solution(network,snapshots)
-    print("end",dt.datetime.now()-now)
+    logger.info("end %s",dt.datetime.now()-now)
     gc.collect()
