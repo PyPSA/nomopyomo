@@ -264,6 +264,16 @@ def define_nodal_balance_constraints(network,snapshots):
             network.constraint_matrix[i0+k][j+k] = -1.
             network.constraint_matrix[i1+k][j+k] = efficiency.at[sn,link]
 
+    #Add any other buses to which the links are attached
+    for i in [int(col[3:]) for col in network.links.columns if col[:3] == "bus" and col not in ["bus0","bus1"]]:
+        efficiency = get_switchable_as_dense(network, 'Link', 'efficiency{}'.format(i), snapshots)
+        for link in network.links.index[network.links["bus{}".format(i)] != ""]:
+            bus = network.links.at[link, "bus{}".format(i)]
+            ii = len(network.constraints) + constraints.at[(bus,snapshots[0]),"i"]
+            j = network.variables.at[("Link-p",link,snapshots[0]),"i"]
+            for k,sn in enumerate(snapshots):
+                network.constraint_matrix[ii+k][j+k] = efficiency.at[sn,link]
+
     add_constraints(network,"nodal_balance",constraints)
 
     #TODO include multi-link
