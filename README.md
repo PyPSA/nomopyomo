@@ -16,16 +16,18 @@ the solution.
 
 The script currently works for Load, Generator, Link, Line,
 Transformer, Store and GlobalConstraint components, and with the
-solver cbc/clp.
+solvers cbc/clp and gurobi.
+
+It has been tested against the standard PyPSA examples.
 
 TODO:
 
-- implement gurobi solver
 - implement glpk solver
 - allow extra functionality
 - constant term in objective function
 - handle non-optimal solutions
 - extract dual variables
+- extract voltage angles
 
 No planned support for StorageUnit (replace with Store and Links
 following [this

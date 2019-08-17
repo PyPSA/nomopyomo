@@ -27,9 +27,7 @@ import pandas as pd
 import numpy as np
 import datetime as dt
 
-import os
-
-import gc
+import os, gc, string, random
 
 import logging
 logger = logging.getLogger(__name__)
@@ -411,6 +409,7 @@ def problem_to_lp(network,filename):
     obj = network.variables.obj.values
     for i in range(len(network.variables)):
         coeff = obj[i]
+        #pyomo keeps zero-coeff variables, presumably to make solver see variable
         #if coeff == 0:
         #    continue
         f.write("{}{} x{}\n".format("+" if coeff >= 0 else "",coeff,i))
@@ -439,13 +438,28 @@ def problem_to_lp(network,filename):
     f.close()
 
 
-def run_cbc(filename,sol_filename):
+def run_cbc(filename,sol_filename,solver_options):
     options = "" #-dualsimplex -primalsimplex
     command = "cbc -printingOptions all -import {} -stat=1 -solve {} -solu {}".format(filename,options,sol_filename)
     logger.info("Running command:")
     logger.info(command)
     os.system(command)
 
+def run_gurobi(filename,sol_filename,solver_logfile,solver_options):
+    options = "" #-dualsimplex -primalsimplex
+    command = "gurobi_cl"
+
+    if solver_logfile is not None:
+        command += " logfile=" + solver_logfile
+
+    for k,v in solver_options.items():
+        command += " {}={}".format(k,v)
+
+    command += " QCPDual=1 resultfile={} {}".format(sol_filename,filename)
+
+    logger.info("Running command:")
+    logger.info(command)
+    os.system(command)
 
 def read_cbc(network,sol_filename):
     f = open(sol_filename,"r")
@@ -457,6 +471,20 @@ def read_cbc(network,sol_filename):
     variables = sol.index[sol[1].str[:1] == "x"]
     variables_sol = sol.loc[variables,2].astype(float)
     variables_sol.index = sol.loc[variables,1].str[1:].astype(int)
+
+    network.variables["sol"] = network.variables["i"].map(variables_sol)
+
+
+def read_gurobi(network,sol_filename):
+    f = open(sol_filename,"r")
+    for i in range(2):
+        data = f.readline()
+        logger.info(data)
+    f.close()
+    sol = pd.read_csv(sol_filename,header=None,skiprows=2,sep=" ")
+
+    variables_sol = sol[1].astype(float)
+    variables_sol.index = sol[0].str[1:].astype(int)
 
     network.variables["sol"] = network.variables["i"].map(variables_sol)
 
@@ -516,7 +544,8 @@ def prepare_lopf_problem(network,snapshots):
    logger.info("before global %s",dt.datetime.now()-now)
    define_global_constraints(network,snapshots)
 
-def network_lopf(network, snapshots=None, solver_name="cbc",skip_pre=False,formulation="kirchhoff"):
+def network_lopf(network, snapshots=None, solver_name="cbc",skip_pre=False,formulation="kirchhoff",solver_logfile=None,
+                 solver_options={}):
     """
     Linear optimal power flow for a group of snapshots.
 
@@ -568,7 +597,7 @@ def network_lopf(network, snapshots=None, solver_name="cbc",skip_pre=False,formu
     None
     """
 
-    supported_solvers = ["cbc"]
+    supported_solvers = ["cbc","gurobi"]
     if solver_name not in supported_solvers:
         raise NotImplementedError("Solver {} not in supported solvers: {}".format(solver_name,supported_solvers))
 
@@ -587,15 +616,25 @@ def network_lopf(network, snapshots=None, solver_name="cbc",skip_pre=False,formu
     logger.info("before prep %s",dt.datetime.now()-now)
     prepare_lopf_problem(network,snapshots)
     gc.collect()
+
+    identifier = ''.join(random.choice(string.ascii_lowercase) for i in range(8))
+    problem_file = "/tmp/test-{}.lp".format(identifier)
+    solution_file = "/tmp/test-{}.sol".format(identifier)
+    log_file = "/tmp/test-{}.log".format(identifier)
+
     logger.info("before write file %s",dt.datetime.now()-now)
-    problem_to_lp(network,"test.lp")
+    problem_to_lp(network,problem_file)
     gc.collect()
     logger.info("before run %s",dt.datetime.now()-now)
 
     if solver_name == "cbc":
-        run_cbc("test.lp","test.sol")
+        run_cbc(problem_file,solution_file,solver_options)
         logger.info("before read %s",dt.datetime.now()-now)
-        read_cbc(network,"test.sol")
+        read_cbc(network,solution_file)
+    elif solver_name == "gurobi":
+        run_gurobi(problem_file,solution_file,log_file,solver_options)
+        logger.info("before read %s",dt.datetime.now()-now)
+        read_gurobi(network,solution_file)
 
     gc.collect()
     logger.info("before assign %s",dt.datetime.now()-now)
