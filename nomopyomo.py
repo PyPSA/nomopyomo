@@ -35,38 +35,6 @@ logger = logging.getLogger(__name__)
 
 now = dt.datetime.now()
 
-def add_variables(network,group,variables):
-    """
-    Add variables to the network.variables.
-
-    Parameters
-    ----------
-    network: pypsa.Network
-    group : string
-        Name of variables group.
-    variables : pandas.DataFrame
-        Multiindex has component name, snapshot. Columns for upper and lower bounds.
-    """
-
-    network.variable_positions.at[group,"start"] = 0 if len(network.variable_positions) == 0 else network.variable_positions["finish"][-1]
-    network.variable_positions.at[group,"finish"] = network.variable_positions.at[group,"start"] + len(variables)
-    network.variable_positions = network.variable_positions.astype(int)
-
-    start = network.variable_positions.at[group,"start"]
-
-    obj = variables.obj.values
-    for i in range(len(variables)):
-        coeff = obj[i]
-        #pyomo keeps zero-coeff variables, presumably to make solver see variable
-        if coeff == 0:
-            coeff = abs(coeff)
-        network.objective_f.write("{}{} x{}\n".format("+" if coeff >= 0 else "",coeff,start+i))
-
-    lower = variables.lower.values
-    upper = variables.upper.values
-    for i in range(len(variables)):
-        network.bounds_f.write("{} <= x{} <= {}\n".format(lower[i],start+i,upper[i]))
-
 def add_constraints(network,group,constraints,constraint_matrix):
     """
     Add constraints to the network.constraints.
@@ -97,87 +65,120 @@ def add_constraints(network,group,constraints,constraint_matrix):
         network.constraints_f.write("{} {}\n\n".format(sense[i],rhs[i]))
 
 
+def write_objective(network,coeff,position):
+    if coeff == 0:
+        coeff = abs(coeff)
+    network.objective_f.write("{}{} x{}\n".format("+" if coeff >= 0 else "",coeff,position))
+
+def write_bounds(network,lower,upper,position):
+    network.bounds_f.write("{} <= x{} <= {}\n".format(lower,position,upper))
+
+def write_constraint(network,constraint_matrix_row,sense,rhs,position):
+    network.constraints_f.write("c{}:\n".format(position))
+    for j,coeff in constraint_matrix_row.items():
+        if coeff == 0:
+            continue
+        network.constraints_f.write("{}{} x{}\n".format("+" if coeff >= 0 else "",coeff,j))
+    network.constraints_f.write("{} {}\n\n".format(sense,rhs))
+
+def add_group(network,sort,group,length):
+    """sort is "variable" or "constraint"""""
+    df = getattr(network,sort + "_positions")
+    df.at[group,"start"] = 0 if len(df) == 0 else df["finish"][-1]
+    df.at[group,"finish"] = df.at[group,"start"] + length
+    setattr(network,sort+ "_positions",df.astype(int))
+
 def extendable_attribute_constraints(network,snapshots,component,attr,marginal_cost=True):
 
     df = getattr(network,network.components[component]["list_name"])
+    pnl = getattr(network,network.components[component]["list_name"]+"_t")
 
     if len(df) == 0:
         return
 
+    group = "{}-{}".format(component,attr)
+    add_group(network,"variable",group,len(df.index)*len(snapshots))
+
+    for i,unit in enumerate(df.index):
+        if not marginal_cost:
+            mc = 0.*network.snapshot_weightings[snapshots]
+        else:
+            if unit in pnl.marginal_cost:
+                mc = pnl.marginal_cost.loc[snapshots,unit]*network.snapshot_weightings[snapshots]
+            else:
+                mc = df.at[unit,"marginal_cost"]*network.snapshot_weightings[snapshots]
+        mc = mc.values
+
+        start = network.variable_positions.at[group,"start"] + i*len(snapshots)
+
+        for k in range(len(snapshots)):
+            write_objective(network,mc[k],start+k)
+
+        if df.at[unit,attr+"_nom_extendable"]:
+            for k in range(len(snapshots)):
+                write_bounds(network,-np.inf,np.inf,start+k)
+        else:
+            if unit in pnl[attr+"_max_pu"]:
+                upper = pnl[attr+"_max_pu"].loc[snapshots,unit].values
+            else:
+                upper = df.at[unit,attr+"_max_pu"]*np.ones(len(snapshots))
+            if component in network.passive_branch_components:
+                lower = -upper
+            else:
+                if unit in pnl[attr+"_min_pu"]:
+                    lower = pnl[attr+"_min_pu"].loc[snapshots,unit].values
+                else:
+                    lower = df.at[unit,attr+"_min_pu"]*np.ones(len(snapshots))
+            upper = upper*df.at[unit,attr+"_nom"]
+            lower = lower*df.at[unit,attr+"_nom"]
+            for k in range(len(snapshots)):
+                write_bounds(network,lower[k],upper[k],start+k)
+
     ext = df.index[df[attr+"_nom_extendable"]]
-    ext.name = "name"
-    fix = df.index[~df[attr+"_nom_extendable"]]
-    fix.name = "name"
+    group = "{}-{}_nom".format(component,attr)
+    add_group(network,"variable",group,len(ext))
 
-    max_pu = get_switchable_as_dense(network, component, attr+'_max_pu', snapshots)
-    if component in network.passive_branch_components:
-        min_pu = -get_switchable_as_dense(network, component, attr+'_max_pu', snapshots)
-    else:
-        min_pu = get_switchable_as_dense(network, component, attr+'_min_pu', snapshots)
+    start = network.variable_positions.at[group,"start"]
+    for i,unit in enumerate(ext):
+        write_objective(network,df.at[unit,"capital_cost"],start+i)
+        write_bounds(network,df.at[unit,attr+"_nom_min"],df.at[unit,attr+"_nom_max"],start+i)
 
-    variables = pd.DataFrame(index=pd.MultiIndex.from_product([df.index,snapshots],
-                                                              names=["name","snapshot"]),
-                             columns=["lower","upper","obj"],
-                             dtype=float)
+    group = "{}-{}_lower".format(component,attr)
+    add_group(network,"constraint",group,len(ext)*len(snapshots))
+    start = network.constraint_positions.at[group,"start"]
 
-    if len(fix) > 0:
-        variables.loc[(fix,snapshots),"lower"] = min_pu.loc[snapshots,fix].multiply(df.loc[fix,attr+'_nom']).stack().swaplevel()
-        variables.loc[(fix,snapshots),"upper"] = max_pu.loc[snapshots,fix].multiply(df.loc[fix,attr+'_nom']).stack().swaplevel()
+    for i_unit,unit in enumerate(ext):
+        i = start + i_unit*len(snapshots)
+        j = network.variable_positions.at["{}-{}".format(component,attr),"start"] + df.index.get_loc(unit)*len(snapshots)
+        j_nom = network.variable_positions.at["{}-{}_nom".format(component,attr),"start"] + i_unit
+        if component in network.passive_branch_components:
+            if unit in pnl[attr+"_max_pu"]:
+                lower = -pnl[attr+"_max_pu"].loc[snapshots,unit].values
+            else:
+                lower = -df.at[unit,attr+"_max_pu"]*np.ones(len(snapshots))
+        else:
+            if unit in pnl[attr+"_min_pu"]:
+                lower = pnl[attr+"_min_pu"].loc[snapshots,unit].values
+            else:
+                lower = df.at[unit,attr+"_min_pu"]*np.ones(len(snapshots))
+        for k,sn in enumerate(snapshots):
+            write_constraint(network,{j+k : 1., j_nom : -lower[k]},">=","0",i+k)
 
-    variables.loc[(ext,snapshots),"lower"] = -np.inf
-    variables.loc[(ext,snapshots),"upper"] = np.inf
 
-    if marginal_cost:
-        mc = get_switchable_as_dense(network, component, 'marginal_cost', snapshots).multiply(network.snapshot_weightings[snapshots],axis=0)
-        variables["obj"] = mc.stack().swaplevel()
-    else:
-        variables["obj"] = 0.
+    group = "{}-{}_upper".format(component,attr)
+    add_group(network,"constraint",group,len(ext)*len(snapshots))
+    start = network.constraint_positions.at[group,"start"]
 
-    add_variables(network,"{}-{}".format(component,attr),variables)
-
-    if len(ext) > 0:
-        variables = pd.DataFrame(index=ext,
-                                 columns=["lower","upper","obj"],
-                                 dtype=float)
-
-        variables.loc[ext,"lower"] = df.loc[ext,attr+"_nom_min"]
-        variables.loc[ext,"upper"] = df.loc[ext,attr+"_nom_max"]
-        variables.loc[ext,"obj"] = df.loc[ext,"capital_cost"]
-
-        add_variables(network,"{}-{}_nom".format(component,attr),variables)
-
-        constraints = pd.DataFrame(index=pd.MultiIndex.from_product([ext,snapshots],
-                                                              names=["name","snapshot"]),
-                             columns=["sense","rhs"])
-        constraints["rhs"] = 0.
-        constraints["sense"] = ">="
-        constraint_matrix = {}
-
-        for i_unit,unit in enumerate(ext):
-            i = i_unit*len(snapshots)
-            j = network.variable_positions.at["{}-{}".format(component,attr),"start"] + df.index.get_loc(unit)*len(snapshots)
-            j_nom = network.variable_positions.at["{}-{}_nom".format(component,attr),"start"] + i_unit
-            for k,sn in enumerate(snapshots):
-                constraint_matrix[i+k] = {j+k : 1., j_nom : -min_pu.at[sn, unit]}
-
-        add_constraints(network,"{}-{}_lower".format(component,attr),constraints,constraint_matrix)
-
-        constraints = pd.DataFrame(index=pd.MultiIndex.from_product([ext,snapshots],
-                                                              names=["name","snapshot"]),
-                             columns=["sense","rhs"])
-        constraints["rhs"] = 0.
-        constraints["sense"] = "<="
-        constraint_matrix = {}
-
-        for i_unit,unit in enumerate(ext):
-            i = i_unit*len(snapshots)
-            j = network.variable_positions.at["{}-{}".format(component,attr),"start"] + df.index.get_loc(unit)*len(snapshots)
-            j_nom = network.variable_positions.at["{}-{}_nom".format(component,attr),"start"] + i_unit
-            for k,sn in enumerate(snapshots):
-                constraint_matrix[i+k] = {j+k : 1., j_nom : -max_pu.at[sn, unit]}
-
-        add_constraints(network,"{}-{}_upper".format(component,attr),constraints,constraint_matrix)
-
+    for i_unit,unit in enumerate(ext):
+        i = start + i_unit*len(snapshots)
+        j = network.variable_positions.at["{}-{}".format(component,attr),"start"] + df.index.get_loc(unit)*len(snapshots)
+        j_nom = network.variable_positions.at["{}-{}_nom".format(component,attr),"start"] + i_unit
+        if unit in pnl[attr+"_max_pu"]:
+            upper = pnl[attr+"_max_pu"].loc[snapshots,unit].values
+        else:
+            upper = df.at[unit,attr+"_max_pu"]*np.ones(len(snapshots))
+        for k,sn in enumerate(snapshots):
+            write_constraint(network,{j+k : 1., j_nom : -upper[k]},"<=","0",i+k)
 
 def define_generator_constraints(network,snapshots):
 
@@ -245,18 +246,22 @@ def define_passive_branch_constraints(network,snapshots):
 
 def define_store_constraints(network,snapshots):
 
-    variables = pd.DataFrame(index=pd.MultiIndex.from_product([network.stores.index,snapshots],
-                                                              names=["name","snapshot"]),
-                             columns=["lower","upper","obj"],
-                             dtype=float)
 
-    variables["lower"] = -np.inf
-    variables["upper"] = np.inf
-    mc = get_switchable_as_dense(network, "Store", 'marginal_cost', snapshots).multiply(network.snapshot_weightings[snapshots],axis=0)
-    if len(network.stores) > 0:
-        variables["obj"] = mc.stack().swaplevel()
+    group = "Store-p"
+    add_group(network,"variable",group,len(network.stores.index)*len(snapshots))
 
-    add_variables(network,"Store-p",variables)
+    for i,unit in enumerate(network.stores.index):
+        if unit in network.stores_t.marginal_cost:
+            mc = network.stores_t.marginal_cost.loc[snapshots,unit]*network.snapshot_weightings[snapshots]
+        else:
+            mc = network.stores.at[unit,"marginal_cost"]*network.snapshot_weightings[snapshots]
+        mc = mc.values
+
+        start = network.variable_positions.at[group,"start"] + i*len(snapshots)
+
+        for k in range(len(snapshots)):
+            write_objective(network,mc[k],start+k)
+            write_bounds(network,-np.inf,np.inf,start+k)
 
     extendable_attribute_constraints(network,snapshots,"Store","e",marginal_cost=False)
 
