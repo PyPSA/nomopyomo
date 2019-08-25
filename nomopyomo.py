@@ -48,23 +48,8 @@ def add_variables(network,group,variables):
         Multiindex has component name, snapshot. Columns for upper and lower bounds.
     """
 
-    variables["i"] = range(len(network.variables),len(network.variables)+len(variables))
-
-    if type(variables.index) is not pd.MultiIndex:
-        variables = pd.concat([variables], keys=[pd.NaT], names=['snapshot']).reorder_levels(["name","snapshot"])
-
-    variables = pd.concat([variables], keys=[group], names=['group'])
-
-    network.variables = pd.concat((network.variables,variables),
-                                  sort=False)
-
-    #if variables is empty, it can mangle the dtype
-    network.variables["i"] = network.variables["i"].astype(int)
-
-    #network.variables = network.variables.sort_index()
-    network.variable_positions.at[group,"start"] = network.n_variables
-    network.n_variables += len(variables)
-    network.variable_positions.at[group,"finish"] = network.n_variables
+    network.variable_positions.at[group,"start"] = 0 if len(network.variable_positions) == 0 else network.variable_positions["finish"][-1]
+    network.variable_positions.at[group,"finish"] = network.variable_positions.at[group,"start"] + len(variables)
     network.variable_positions = network.variable_positions.astype(int)
 
     start = network.variable_positions.at[group,"start"]
@@ -95,23 +80,8 @@ def add_constraints(network,group,constraints,constraint_matrix):
         Multiindex has component name, snapshot. Columns for sense and rhs.
     """
 
-    constraints["i"] = range(len(network.constraints),len(network.constraints)+len(constraints))
-
-    if type(constraints.index) is not pd.MultiIndex:
-        constraints = pd.concat([constraints], keys=[pd.NaT], names=['snapshot']).reorder_levels(["name","snapshot"])
-
-    constraints = pd.concat([constraints], keys=[group], names=['group'])
-
-    network.constraints = pd.concat((network.constraints,constraints),
-                                  sort=False)
-
-    #if constraints is empty, it can mangle the dtype
-    network.constraints["i"] = network.constraints["i"].astype(int)
-
-    #network.constraints = network.constraints.sort_index()
-    network.constraint_positions.at[group,"start"] = network.n_constraints
-    network.n_constraints += len(constraints)
-    network.constraint_positions.at[group,"finish"] = network.n_constraints
+    network.constraint_positions.at[group,"start"] = 0 if len(network.constraint_positions) == 0 else network.constraint_positions["finish"][-1]
+    network.constraint_positions.at[group,"finish"] = network.constraint_positions.at[group,"start"] + len(constraints)
     network.constraint_positions = network.constraint_positions.astype(int)
 
     start = network.constraint_positions.at[group,"start"]
@@ -181,16 +151,14 @@ def extendable_attribute_constraints(network,snapshots,component,attr,marginal_c
                              columns=["sense","rhs"])
         constraints["rhs"] = 0.
         constraints["sense"] = ">="
-        constraints["i"] = range(len(constraints))
         constraint_matrix = {}
 
-        for unit in ext:
-            i = len(network.constraints) + constraints.at[(unit,snapshots[0]),"i"]
-            j = network.variables.at[("{}-{}".format(component,attr),unit,snapshots[0]),"i"]
-            j_nom = network.variables.at[("{}-{}_nom".format(component,attr),unit,pd.NaT),"i"]
+        for i_unit,unit in enumerate(ext):
+            i = i_unit*len(snapshots)
+            j = network.variable_positions.at["{}-{}".format(component,attr),"start"] + df.index.get_loc(unit)*len(snapshots)
+            j_nom = network.variable_positions.at["{}-{}_nom".format(component,attr),"start"] + i_unit
             for k,sn in enumerate(snapshots):
-                network.constraint_matrix[i+k] = {j+k : 1., j_nom : -min_pu.at[sn, unit]}
-                constraint_matrix[i-len(network.constraints)+k] = {j+k : 1., j_nom : -min_pu.at[sn, unit]}
+                constraint_matrix[i+k] = {j+k : 1., j_nom : -min_pu.at[sn, unit]}
 
         add_constraints(network,"{}-{}_lower".format(component,attr),constraints,constraint_matrix)
 
@@ -199,16 +167,14 @@ def extendable_attribute_constraints(network,snapshots,component,attr,marginal_c
                              columns=["sense","rhs"])
         constraints["rhs"] = 0.
         constraints["sense"] = "<="
-        constraints["i"] = range(len(constraints))
         constraint_matrix = {}
 
-        for unit in ext:
-            i = len(network.constraints) + constraints.at[(unit,snapshots[0]),"i"]
-            j = network.variables.at[("{}-{}".format(component,attr),unit,snapshots[0]),"i"]
-            j_nom = network.variables.at[("{}-{}_nom".format(component,attr),unit,pd.NaT),"i"]
+        for i_unit,unit in enumerate(ext):
+            i = i_unit*len(snapshots)
+            j = network.variable_positions.at["{}-{}".format(component,attr),"start"] + df.index.get_loc(unit)*len(snapshots)
+            j_nom = network.variable_positions.at["{}-{}_nom".format(component,attr),"start"] + i_unit
             for k,sn in enumerate(snapshots):
-                network.constraint_matrix[i+k] = {j+k : 1., j_nom : -max_pu.at[sn, unit]}
-                constraint_matrix[i-len(network.constraints)+k] = {j+k : 1., j_nom : -max_pu.at[sn, unit]}
+                constraint_matrix[i+k] = {j+k : 1., j_nom : -max_pu.at[sn, unit]}
 
         add_constraints(network,"{}-{}_upper".format(component,attr),constraints,constraint_matrix)
 
@@ -256,19 +222,16 @@ def define_passive_branch_constraints(network,snapshots):
 
             if len(cycle_is) == 0:  continue
 
-            i = len(network.constraints) + c*len(snapshots)
+            i = c*len(snapshots)
             for k,sn in enumerate(snapshots):
-                network.constraint_matrix[i+k] = {}
-                constraint_matrix[i-len(network.constraints)+k] = {}
+                constraint_matrix[i+k] = {}
 
             for cycle_i in cycle_is:
                 branch_idx = branches.index[cycle_i]
                 attribute_value = 1e5 * branches.at[ branch_idx, attribute] * subnetwork.C[ cycle_i, col_j]
-
-                j = network.variables.at[("{}-s".format(branch_idx[0]),branch_idx[1],snapshots[0]),"i"]
+                j = network.variable_positions.at["{}-s".format(branch_idx[0]),"start"] + getattr(network,network.components[branch_idx[0]]["list_name"]).index.get_loc(branch_idx[1])*len(snapshots)
                 for k,sn in enumerate(snapshots):
-                    network.constraint_matrix[i+k][j+k] = attribute_value
-                    constraint_matrix[i-len(network.constraints)+k][j+k] = attribute_value
+                    constraint_matrix[i+k][j+k] = attribute_value
             c+=1
 
     constraints = pd.DataFrame(index=pd.MultiIndex.from_product([range(c),snapshots],
@@ -277,7 +240,6 @@ def define_passive_branch_constraints(network,snapshots):
 
     constraints["sense"] = "=="
     constraints["rhs"] = 0.
-    constraints["i"] = range(len(constraints))
 
     add_constraints(network,"Cycle",constraints,constraint_matrix)
 
@@ -305,36 +267,30 @@ def define_store_constraints(network,snapshots):
                               columns=["sense","rhs"])
     constraints["sense"] = "=="
     constraints["rhs"] = 0.
-    constraints["i"] = range(len(constraints))
     constraint_matrix = {}
 
     stores = network.stores
 
-    for store in stores.index:
-        i = len(network.constraints) + constraints.at[(store,snapshots[0]),"i"]
-        j_e = network.variables.at[("Store-e",store,snapshots[0]),"i"]
-        j_p = network.variables.at[("Store-p",store,snapshots[0]),"i"]
+    for i_store,store in enumerate(stores.index):
+        i = i_store*len(snapshots)
+        j_e = network.variable_positions.at["Store-e","start"] + network.stores.index.get_loc(store)*len(snapshots)
+        j_p = network.variable_positions.at["Store-p","start"] + network.stores.index.get_loc(store)*len(snapshots)
         standing_loss = stores.at[store,"standing_loss"]
         for k,sn in enumerate(snapshots):
-            network.constraint_matrix[i+k] = {j_e+k : -1.}
-            constraint_matrix[i-len(network.constraints)+k] = {j_e+k : -1.}
+            constraint_matrix[i+k] = {j_e+k : -1.}
 
             elapsed_hours = network.snapshot_weightings[sn]
 
             if k == 0:
                 if stores.at[store,"e_cyclic"]:
-                    network.constraint_matrix[i+k][j_e+len(snapshots)-1] = (1-standing_loss)**elapsed_hours
-                    constraint_matrix[i-len(network.constraints)+k][j_e+len(snapshots)-1] = (1-standing_loss)**elapsed_hours
+                    constraint_matrix[i+k][j_e+len(snapshots)-1] = (1-standing_loss)**elapsed_hours
                 else:
                     constraints.at[(store,sn),"rhs"] = -((1-standing_loss)**elapsed_hours
                                                          * stores.at[store,"e_initial"])
             else:
-                network.constraint_matrix[i+k][j_e+k-1] = (1-standing_loss)**elapsed_hours
-                constraint_matrix[i-len(network.constraints)+k][j_e+k-1] = (1-standing_loss)**elapsed_hours
+                constraint_matrix[i+k][j_e+k-1] = (1-standing_loss)**elapsed_hours
 
-
-            network.constraint_matrix[i+k][j_p+k] =  -elapsed_hours
-            constraint_matrix[i-len(network.constraints)+k][j_p+k] =  -elapsed_hours
+            constraint_matrix[i+k][j_p+k] =  -elapsed_hours
 
 
     add_constraints(network,"Store",constraints,constraint_matrix)
@@ -348,66 +304,57 @@ def define_nodal_balance_constraints(network,snapshots):
 
     constraints["rhs"] = -get_switchable_as_dense(network, 'Load', 'p_set', snapshots).multiply(network.loads.sign).groupby(network.loads.bus,axis=1).sum().reindex(columns=network.buses.index,fill_value=0.).stack().swaplevel()
     constraints["sense"] = "=="
-    constraints["i"] = range(len(constraints))
     constraint_matrix = {}
 
 
-    for bus in network.buses.index:
-        i = len(network.constraints) + constraints.at[(bus,snapshots[0]),"i"]
+    for i_bus,bus in enumerate(network.buses.index):
+        i = i_bus*len(snapshots)
         for k in range(len(snapshots)):
-            network.constraint_matrix[i+k] = {}
-            constraint_matrix[i-len(network.constraints)+k] = {}
+            constraint_matrix[i+k] = {}
 
     for component in ["Generator","Store"]:
         df = getattr(network,network.components[component]["list_name"])
         for unit in df.index:
             bus = df.at[unit,"bus"]
             sign = df.at[unit,"sign"]
-            i = len(network.constraints) + constraints.at[(bus,snapshots[0]),"i"]
-            j = network.variables.at[(component+"-p",unit,snapshots[0]),"i"]
+            i = network.buses.index.get_loc(bus)*len(snapshots)
+            j = network.variable_positions.at["{}-p".format(component),"start"] + df.index.get_loc(unit)*len(snapshots)
             for k,sn in enumerate(snapshots):
-                network.constraint_matrix[i+k][j+k] = sign
-                constraint_matrix[i-len(network.constraints)+k][j+k] = sign
+                constraint_matrix[i+k][j+k] = sign
 
     efficiency = get_switchable_as_dense(network, 'Link', 'efficiency', snapshots)
 
     for link in network.links.index:
         bus0 = network.links.at[link,"bus0"]
         bus1 = network.links.at[link,"bus1"]
-        i0 = len(network.constraints) + constraints.at[(bus0,snapshots[0]),"i"]
-        i1 = len(network.constraints) + constraints.at[(bus1,snapshots[0]),"i"]
-        j = network.variables.at[("Link-p",link,snapshots[0]),"i"]
+        i0 = network.buses.index.get_loc(bus0)*len(snapshots)
+        i1 = network.buses.index.get_loc(bus1)*len(snapshots)
+        j = network.variable_positions.at["Link-p","start"] + network.links.index.get_loc(link)*len(snapshots)
         for k,sn in enumerate(snapshots):
-            network.constraint_matrix[i0+k][j+k] = -1.
-            network.constraint_matrix[i1+k][j+k] = efficiency.at[sn,link]
-            constraint_matrix[i0-len(network.constraints)+k][j+k] = -1.
-            constraint_matrix[i1-len(network.constraints)+k][j+k] = efficiency.at[sn,link]
+            constraint_matrix[i0+k][j+k] = -1.
+            constraint_matrix[i1+k][j+k] = efficiency.at[sn,link]
 
     #Add any other buses to which the links are attached
     for i in [int(col[3:]) for col in network.links.columns if col[:3] == "bus" and col not in ["bus0","bus1"]]:
         efficiency = get_switchable_as_dense(network, 'Link', 'efficiency{}'.format(i), snapshots)
         for link in network.links.index[network.links["bus{}".format(i)] != ""]:
             bus = network.links.at[link, "bus{}".format(i)]
-            ii = len(network.constraints) + constraints.at[(bus,snapshots[0]),"i"]
-            j = network.variables.at[("Link-p",link,snapshots[0]),"i"]
+            ii = network.buses.index.get_loc(bus)*len(snapshots)
+            j = network.variable_positions.at["Link-p","start"] + network.links.index.get_loc(link)*len(snapshots)
             for k,sn in enumerate(snapshots):
-                network.constraint_matrix[ii+k][j+k] = efficiency.at[sn,link]
-                constraint_matrix[ii-len(network.constraints)+k][j+k] = efficiency.at[sn,link]
+                constraint_matrix[ii+k][j+k] = efficiency.at[sn,link]
 
     for component in network.passive_branch_components:
         df = getattr(network,network.components[component]["list_name"])
         for unit in df.index:
             bus0 = df.at[unit,"bus0"]
             bus1 = df.at[unit,"bus1"]
-            i0 = len(network.constraints) + constraints.at[(bus0,snapshots[0]),"i"]
-            i1 = len(network.constraints) + constraints.at[(bus1,snapshots[0]),"i"]
-            j = network.variables.at[("{}-s".format(component),unit,snapshots[0]),"i"]
+            i0 = network.buses.index.get_loc(bus0)*len(snapshots)
+            i1 = network.buses.index.get_loc(bus1)*len(snapshots)
+            j = network.variable_positions.at["{}-s".format(component),"start"] + df.index.get_loc(unit)*len(snapshots)
             for k,sn in enumerate(snapshots):
-                network.constraint_matrix[i0+k][j+k] = -1.
-                network.constraint_matrix[i1+k][j+k] = 1.
-                constraint_matrix[i0-len(network.constraints)+k][j+k] = -1.
-                constraint_matrix[i1-len(network.constraints)+k][j+k] = 1.
-
+                constraint_matrix[i0+k][j+k] = -1.
+                constraint_matrix[i1+k][j+k] = 1.
 
 
     add_constraints(network,"nodal_balance",constraints,constraint_matrix)
@@ -423,17 +370,14 @@ def define_global_constraints(network,snapshots):
     gcs.name = "name"
     constraints = pd.DataFrame(index=gcs,
                                columns=["sense","rhs"])
-    constraints["i"] = range(len(constraints))
     constraint_matrix = {}
 
-    for k,gc in enumerate(gcs):
+    for i,gc in enumerate(gcs):
         if network.global_constraints.loc[gc,"type"] == "primary_energy":
             constraints.at[gc,"sense"] = network.global_constraints.loc[gc,"sense"]
             constraints.at[gc,"rhs"] = network.global_constraints.loc[gc,"constant"]
 
-            i = len(network.constraints) + k
-            network.constraint_matrix[i] = {}
-            constraint_matrix[i-len(network.constraints)] = {}
+            constraint_matrix[i] = {}
 
             carrier_attribute = network.global_constraints.loc[gc,"carrier_attribute"]
 
@@ -444,63 +388,21 @@ def define_global_constraints(network,snapshots):
                 #for generators, use the prime mover carrier
                 gens = network.generators.index[network.generators.carrier == carrier]
                 for gen in gens:
-                    j = network.variables.at[("Generator-p",gen,snapshots[0]),"i"]
+                    j = network.variable_positions.at["Generator-p","start"] + network.generators.index.get_loc(gen)*len(snapshots)
                     for k,sn in enumerate(snapshots):
-                        network.constraint_matrix[i][j+k] =(attribute
-                                                            * (1/network.generators.at[gen,"efficiency"])
-                                                            * network.snapshot_weightings[sn])
-                        constraint_matrix[i-len(network.constraints)][j+k] = (attribute
-                                                                              * (1/network.generators.at[gen,"efficiency"])
-                                                                              * network.snapshot_weightings[sn])
+                        constraint_matrix[i][j+k] = (attribute
+                                                     * (1/network.generators.at[gen,"efficiency"])
+                                                     * network.snapshot_weightings[sn])
 
                 #for stores, inherit the carrier from the bus
                 #take difference of energy at end and start of period
                 stores = network.stores.index[(network.stores.bus.map(network.buses.carrier) == carrier) & (~network.stores.e_cyclic)]
                 for store in stores:
-                    j = network.variables.at[("Store-e",store,snapshots[-1]),"i"]
-                    network.constraint_matrix[i][j] = -attribute
-                    constraint_matrix[i-len(network.constraints)][j] = -attribute
+                    j = network.variable_positions.at["Store-e","start"] + network.stores.index.get_loc(store)*len(snapshots) + len(snapshots)-1
+                    constraint_matrix[i][j] = -attribute
                     constraints.at[gc,"rhs"] -= attribute*network.stores.at[store,"e_initial"]
 
-
     add_constraints(network,"global_constraints",constraints,constraint_matrix)
-
-
-def problem_to_lp(network,filename):
-
-    f = open(filename, 'w')
-    f.write('\\* LOPF \*\\n\nmin\nobj:\n')
-
-    obj = network.variables.obj.values
-    for i in range(len(network.variables)):
-        coeff = obj[i]
-        #pyomo keeps zero-coeff variables, presumably to make solver see variable
-        #if coeff == 0:
-        #    continue
-        f.write("{}{} x{}\n".format("+" if coeff >= 0 else "",coeff,i))
-
-    f.write("\n\ns.t.\n\n")
-
-
-    sense = network.constraints.sense.str.replace("==","=").values
-    rhs = network.constraints.rhs.values
-    for i in range(len(network.constraints)):
-        f.write("c{}:\n".format(i))
-        for j,coeff in network.constraint_matrix[i].items():
-            if coeff == 0:
-                continue
-            f.write("{}{} x{}\n".format("+" if coeff >= 0 else "",coeff,j))
-        f.write("{} {}\n\n".format(sense[i],rhs[i]))
-
-    f.write("\nbounds\n")
-
-    lower = network.variables.lower.values
-    upper = network.variables.upper.values
-    for i in range(len(network.variables)):
-        f.write("{} <= x{} <= {}\n".format(lower[i],i,upper[i]))
-
-    f.write("end\n")
-    f.close()
 
 
 def run_cbc(filename,sol_filename,solver_options):
@@ -537,7 +439,7 @@ def read_cbc(network,sol_filename):
     variables_sol = sol.loc[variables,2].astype(float)
     variables_sol.index = sol.loc[variables,1].str[1:].astype(int)
 
-    network.variables["sol"] = network.variables["i"].map(variables_sol)
+    return variables_sol
 
 
 def read_gurobi(network,sol_filename):
@@ -551,10 +453,11 @@ def read_gurobi(network,sol_filename):
     variables_sol = sol[1].astype(float)
     variables_sol.index = sol[0].str[1:].astype(int)
 
-    network.variables["sol"] = network.variables["i"].map(variables_sol)
+    return variables_sol
 
 
-def assign_solution(network,snapshots):
+
+def assign_solution(network,snapshots,variables_sol):
 
     allocate_series_dataframes(network, {'Generator': ['p'],
                                          'Load': ['p'],
@@ -566,40 +469,55 @@ def assign_solution(network,snapshots):
                                          'Link': ["p"+col[3:] for col in network.links.columns if col[:3] == "bus"]
                                                   +['mu_lower', 'mu_upper']})
 
+
     if len(network.generators) > 0:
-        network.generators_t.p.loc[snapshots] = network.variables.loc["Generator-p","sol"].unstack(level=0)
+        start,finish = network.variable_positions.loc["Generator-p"]
+        network.generators_t.p.loc[snapshots,network.generators.index] = pd.Series(data=variables_sol[start:finish].values,
+                                                                                   index=pd.MultiIndex.from_product([network.generators.index,snapshots])).unstack(level=0)[network.generators.index]
 
     if len(network.stores) > 0:
-        network.stores_t.p.loc[snapshots] = network.variables.loc["Store-p","sol"].unstack(level=0)
-        network.stores_t.e.loc[snapshots] = network.variables.loc["Store-e","sol"].unstack(level=0)
+        start,finish = network.variable_positions.loc["Store-p"]
+        network.stores_t.p.loc[snapshots,network.stores.index] = pd.Series(data=variables_sol[start:finish].values,
+                                                                           index=pd.MultiIndex.from_product([network.stores.index,snapshots])).unstack(level=0)[network.stores.index]
+        start,finish = network.variable_positions.loc["Store-e"]
+        network.stores_t.e.loc[snapshots,network.stores.index] = pd.Series(data=variables_sol[start:finish].values,
+                                                                           index=pd.MultiIndex.from_product([network.stores.index,snapshots])).unstack(level=0)[network.stores.index]
 
     if len(network.links) > 0:
-        network.links_t.p0.loc[snapshots] = network.variables.loc["Link-p","sol"].unstack(level=0)
+        start,finish = network.variable_positions.loc["Link-p"]
+        network.links_t.p0.loc[snapshots,network.links.index] = pd.Series(data=variables_sol[start:finish].values,
+                                                          index=pd.MultiIndex.from_product([network.links.index,snapshots])).unstack(level=0)[network.links.index]
         efficiency = get_switchable_as_dense(network, 'Link', 'efficiency', snapshots)
-        network.links_t.p1.loc[snapshots] = -network.links_t.p0.loc[snapshots]*efficiency.loc[snapshots,:]
+        network.links_t.p1.loc[snapshots,network.links.index] = -network.links_t.p0.loc[snapshots,network.links.index]*efficiency.loc[snapshots,network.links.index]
+        for i in [int(col[3:]) for col in network.links.columns if col[:3] == "bus" and col not in ["bus0","bus1"]]:
+            efficiency = get_switchable_as_dense(network, 'Link', 'efficiency{}'.format(i), snapshots)
+            network.links_t["p"+str(i)].loc[snapshots,network.links.index] = -network.links_t.p0.loc[snapshots,network.links.index]*efficiency.loc[snapshots,network.links.index]
 
     for c in network.iterate_components(network.passive_branch_components):
-        c.pnl.p0.loc[snapshots] = network.variables.loc["{}-s".format(c.name),"sol"].unstack(level=0)
-        c.pnl.p1.loc[snapshots] = - c.pnl.p0.loc[snapshots]
+        start,finish = network.variable_positions.loc["{}-s".format(c.name)]
+        c.pnl.p0.loc[snapshots,c.df.index] = pd.Series(data=variables_sol[start:finish].values,
+                                            index=pd.MultiIndex.from_product([c.df.index,snapshots])).unstack(level=0)[c.df.index]
+        c.pnl.p1.loc[snapshots,c.df.index] = - c.pnl.p0.loc[snapshots,c.df.index]
 
-    for component in ["Generator","Link","Store"]:
+    for component in ["Generator","Link","Store","Line","Transformer"]:
         df = getattr(network,network.components[component]["list_name"])
-        attr = "e" if component == "Store" else "p"
+        if component == "Store":
+            attr ="e"
+        elif component in ["Line","Transformer"]:
+            attr = "s"
+        else:
+            attr = "p"
         df[attr+"_nom_opt"] = df[attr+"_nom"]
         ext = df.index[df[attr+"_nom_extendable"]]
         if len(ext) > 0:
-            df.loc[ext,attr+"_nom_opt"] = network.variables.loc["{}-{}_nom".format(component,attr),"sol"].groupby(level=0).sum()
+            start,finish = network.variable_positions.loc["{}-{}_nom".format(component,attr)]
+            df.loc[ext,attr+"_nom_opt"] = variables_sol[start:finish].values
 
 
-def prepare_lopf_problem(network,snapshots):
-   network.variables = pd.DataFrame()
-   network.constraints = pd.DataFrame()
-   network.constraint_matrix = {}
+def prepare_lopf_problem(network,snapshots,problem_file):
 
    network.variable_positions = pd.DataFrame(columns=["start","finish"])
    network.constraint_positions = pd.DataFrame(columns=["start","finish"])
-   network.n_variables = 0
-   network.n_constraints = 0
 
    network.objective_f = open("objective.txt","w")
    network.objective_f.write('\\* LOPF \*\\n\nmin\nobj:\n')
@@ -629,7 +547,7 @@ def prepare_lopf_problem(network,snapshots):
    network.constraints_f.close()
    network.bounds_f.close()
 
-   os.system("cat objective.txt constraints.txt bounds.txt > problem.lp")
+   os.system("cat objective.txt constraints.txt bounds.txt > {}".format(problem_file))
 
 
 def network_lopf(network, snapshots=None, solver_name="cbc",skip_pre=False,formulation="kirchhoff",solver_logfile=None,
@@ -701,31 +619,28 @@ def network_lopf(network, snapshots=None, solver_name="cbc",skip_pre=False,formu
 
     snapshots = _as_snapshots(network, snapshots)
 
-    logger.info("before prep %s",dt.datetime.now()-now)
-    prepare_lopf_problem(network,snapshots)
-    gc.collect()
-
     identifier = ''.join(random.choice(string.ascii_lowercase) for i in range(8))
     problem_file = "/tmp/test-{}.lp".format(identifier)
     solution_file = "/tmp/test-{}.sol".format(identifier)
     log_file = "/tmp/test-{}.log".format(identifier)
 
-    logger.info("before write file %s",dt.datetime.now()-now)
-    problem_to_lp(network,problem_file)
+    logger.info("before prep %s",dt.datetime.now()-now)
+    prepare_lopf_problem(network,snapshots,problem_file)
     gc.collect()
+
     logger.info("before run %s",dt.datetime.now()-now)
 
     if solver_name == "cbc":
         run_cbc(problem_file,solution_file,solver_options)
         logger.info("before read %s",dt.datetime.now()-now)
-        read_cbc(network,solution_file)
+        variables_sol = read_cbc(network,solution_file)
     elif solver_name == "gurobi":
         run_gurobi(problem_file,solution_file,log_file,solver_options)
         logger.info("before read %s",dt.datetime.now()-now)
-        read_gurobi(network,solution_file)
+        variables_sol = read_gurobi(network,solution_file)
 
     gc.collect()
     logger.info("before assign %s",dt.datetime.now()-now)
-    assign_solution(network,snapshots)
+    assign_solution(network,snapshots,variables_sol)
     logger.info("end %s",dt.datetime.now()-now)
     gc.collect()
