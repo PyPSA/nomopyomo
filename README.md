@@ -5,14 +5,18 @@ This script takes an unsolved [PyPSA](https://github.com/PyPSA/PyPSA)
 network and solves a linear optimal power flow (LOPF) using a custom
 handler for the optimisation solver, rather than pyomo.
 
-The script builds:
+nomopyomo is both faster than pyomo and uses considerably less
+memory. Here is an example of the memory usage when solving
+investments and operation for a zero-net-emission sector-coupled
+50-node model of Europe:
 
-- `network.variables`, a pandas.DataFrame of variables along with their upper and lower bounds
-- `network.constraints`, a pandas.DataFrame of constraints along with their sense (<=,>=,==) and constant right-hand-side terms
-- `network.constraint_matrix`, a dictionary of the sparse constraint-variable coefficients
+![pyomo-nomopyomo comparison](https://www.nworbmot.org/pyomo-versus-nomopyomo-190825.png)
 
-Then writes a .lp file for the problem, solves it, and reads back in
-the solution.
+However, nomopyomo is harder to customise and cannot currently be used
+for non-linear problems.
+
+nomopyomo works by writing an .lp file for the problem, solving it, and
+reading back in the solution.
 
 The script currently works for Load, Generator, Link, Line,
 Transformer, Store and GlobalConstraint components, and with the
