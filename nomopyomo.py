@@ -375,14 +375,17 @@ def define_global_constraints(network,snapshots):
             write_constraint(network,constraint_matrix_row,network.global_constraints.loc[gc,"sense"],rhs,start+i)
 
 
-def run_cbc(filename,sol_filename,solver_options):
+def run_cbc(filename,sol_filename,solver_options,keep_files):
     options = "" #-dualsimplex -primalsimplex
     command = "cbc -printingOptions all -import {} -stat=1 -solve {} -solu {}".format(filename,options,sol_filename)
     logger.info("Running command:")
     logger.info(command)
     os.system(command)
 
-def run_gurobi(filename,sol_filename,solver_logfile,solver_options):
+    if not keep_files:
+       os.system("rm "+ filename)
+
+def run_gurobi(filename,sol_filename,solver_logfile,solver_options,keep_files):
     options = "" #-dualsimplex -primalsimplex
     command = "gurobi_cl"
 
@@ -398,7 +401,10 @@ def run_gurobi(filename,sol_filename,solver_logfile,solver_options):
     logger.info(command)
     os.system(command)
 
-def read_cbc(network,sol_filename):
+    if not keep_files:
+        os.system("rm "+ filename)
+
+def read_cbc(network,sol_filename,keep_files):
     f = open(sol_filename,"r")
     data = f.readline()
     logger.info(data)
@@ -409,10 +415,13 @@ def read_cbc(network,sol_filename):
     variables_sol = sol.loc[variables,2].astype(float)
     variables_sol.index = sol.loc[variables,1].str[1:].astype(int)
 
+    if not keep_files:
+       os.system("rm "+ sol_filename)
+
     return variables_sol
 
 
-def read_gurobi(network,sol_filename):
+def read_gurobi(network,sol_filename,keep_files):
     f = open(sol_filename,"r")
     for i in range(2):
         data = f.readline()
@@ -422,6 +431,9 @@ def read_gurobi(network,sol_filename):
 
     variables_sol = sol[1].astype(float)
     variables_sol.index = sol[0].str[1:].astype(int)
+
+    if not keep_files:
+       os.system("rm "+ sol_filename)
 
     return variables_sol
 
@@ -484,7 +496,7 @@ def assign_solution(network,snapshots,variables_sol):
             df.loc[ext,attr+"_nom_opt"] = variables_sol[start:finish].values
 
 
-def prepare_lopf_problem(network,snapshots,problem_file):
+def prepare_lopf_problem(network,snapshots,problem_file,keep_files):
 
    network.variable_positions = pd.DataFrame(columns=["start","finish"])
    network.constraint_positions = pd.DataFrame(columns=["start","finish"])
@@ -522,9 +534,13 @@ def prepare_lopf_problem(network,snapshots,problem_file):
 
    os.system("cat {} {} {} > {}".format(objective_fn,constraints_fn,bounds_fn,problem_file))
 
+   if not keep_files:
+       for fn in [objective_fn,constraints_fn,bounds_fn]:
+           os.system("rm "+ fn)
+
 
 def network_lopf(network, snapshots=None, solver_name="cbc",skip_pre=False,formulation="kirchhoff",solver_logfile=None,
-                 solver_options={}):
+                 solver_options={},keep_files=False):
     """
     Linear optimal power flow for a group of snapshots.
 
@@ -598,19 +614,19 @@ def network_lopf(network, snapshots=None, solver_name="cbc",skip_pre=False,formu
     log_file = "/tmp/test-{}.log".format(network.identifier)
 
     logger.info("before prep %s",dt.datetime.now()-now)
-    prepare_lopf_problem(network,snapshots,problem_file)
+    prepare_lopf_problem(network,snapshots,problem_file,keep_files)
     gc.collect()
 
     logger.info("before run %s",dt.datetime.now()-now)
 
     if solver_name == "cbc":
-        run_cbc(problem_file,solution_file,solver_options)
+        run_cbc(problem_file,solution_file,solver_options,keep_files)
         logger.info("before read %s",dt.datetime.now()-now)
-        variables_sol = read_cbc(network,solution_file)
+        variables_sol = read_cbc(network,solution_file,keep_files)
     elif solver_name == "gurobi":
-        run_gurobi(problem_file,solution_file,log_file,solver_options)
+        run_gurobi(problem_file,solution_file,log_file,solver_options,keep_files)
         logger.info("before read %s",dt.datetime.now()-now)
-        variables_sol = read_gurobi(network,solution_file)
+        variables_sol = read_gurobi(network,solution_file,keep_files)
 
     gc.collect()
     logger.info("before assign %s",dt.datetime.now()-now)
