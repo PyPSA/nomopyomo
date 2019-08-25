@@ -13,8 +13,12 @@ sec*
 
 *.lp
 
+*.txt
+
 __pycache__
 
 opf.py
 
 *.sol
+
+mem_test

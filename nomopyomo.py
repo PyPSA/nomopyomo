@@ -62,8 +62,27 @@ def add_variables(network,group,variables):
     network.variables["i"] = network.variables["i"].astype(int)
 
     #network.variables = network.variables.sort_index()
+    network.variable_positions.at[group,"start"] = network.n_variables
+    network.n_variables += len(variables)
+    network.variable_positions.at[group,"finish"] = network.n_variables
+    network.variable_positions = network.variable_positions.astype(int)
 
-def add_constraints(network,group,constraints):
+    start = network.variable_positions.at[group,"start"]
+
+    obj = variables.obj.values
+    for i in range(len(variables)):
+        coeff = obj[i]
+        #pyomo keeps zero-coeff variables, presumably to make solver see variable
+        if coeff == 0:
+            coeff = abs(coeff)
+        network.objective_f.write("{}{} x{}\n".format("+" if coeff >= 0 else "",coeff,start+i))
+
+    lower = variables.lower.values
+    upper = variables.upper.values
+    for i in range(len(variables)):
+        network.bounds_f.write("{} <= x{} <= {}\n".format(lower[i],start+i,upper[i]))
+
+def add_constraints(network,group,constraints,constraint_matrix):
     """
     Add constraints to the network.constraints.
 
@@ -90,6 +109,22 @@ def add_constraints(network,group,constraints):
     network.constraints["i"] = network.constraints["i"].astype(int)
 
     #network.constraints = network.constraints.sort_index()
+    network.constraint_positions.at[group,"start"] = network.n_constraints
+    network.n_constraints += len(constraints)
+    network.constraint_positions.at[group,"finish"] = network.n_constraints
+    network.constraint_positions = network.constraint_positions.astype(int)
+
+    start = network.constraint_positions.at[group,"start"]
+
+    sense = constraints.sense.str.replace("==","=").values
+    rhs = constraints.rhs.values
+    for i in range(len(constraints)):
+        network.constraints_f.write("c{}:\n".format(start+i))
+        for j,coeff in constraint_matrix[i].items():
+            if coeff == 0:
+                continue
+            network.constraints_f.write("{}{} x{}\n".format("+" if coeff >= 0 else "",coeff,j))
+        network.constraints_f.write("{} {}\n\n".format(sense[i],rhs[i]))
 
 
 def extendable_attribute_constraints(network,snapshots,component,attr,marginal_cost=True):
@@ -130,7 +165,6 @@ def extendable_attribute_constraints(network,snapshots,component,attr,marginal_c
 
     add_variables(network,"{}-{}".format(component,attr),variables)
 
-
     if len(ext) > 0:
         variables = pd.DataFrame(index=ext,
                                  columns=["lower","upper","obj"],
@@ -148,6 +182,7 @@ def extendable_attribute_constraints(network,snapshots,component,attr,marginal_c
         constraints["rhs"] = 0.
         constraints["sense"] = ">="
         constraints["i"] = range(len(constraints))
+        constraint_matrix = {}
 
         for unit in ext:
             i = len(network.constraints) + constraints.at[(unit,snapshots[0]),"i"]
@@ -155,8 +190,9 @@ def extendable_attribute_constraints(network,snapshots,component,attr,marginal_c
             j_nom = network.variables.at[("{}-{}_nom".format(component,attr),unit,pd.NaT),"i"]
             for k,sn in enumerate(snapshots):
                 network.constraint_matrix[i+k] = {j+k : 1., j_nom : -min_pu.at[sn, unit]}
+                constraint_matrix[i-len(network.constraints)+k] = {j+k : 1., j_nom : -min_pu.at[sn, unit]}
 
-        add_constraints(network,"{}-{}_lower".format(component,attr),constraints)
+        add_constraints(network,"{}-{}_lower".format(component,attr),constraints,constraint_matrix)
 
         constraints = pd.DataFrame(index=pd.MultiIndex.from_product([ext,snapshots],
                                                               names=["name","snapshot"]),
@@ -164,6 +200,7 @@ def extendable_attribute_constraints(network,snapshots,component,attr,marginal_c
         constraints["rhs"] = 0.
         constraints["sense"] = "<="
         constraints["i"] = range(len(constraints))
+        constraint_matrix = {}
 
         for unit in ext:
             i = len(network.constraints) + constraints.at[(unit,snapshots[0]),"i"]
@@ -171,8 +208,9 @@ def extendable_attribute_constraints(network,snapshots,component,attr,marginal_c
             j_nom = network.variables.at[("{}-{}_nom".format(component,attr),unit,pd.NaT),"i"]
             for k,sn in enumerate(snapshots):
                 network.constraint_matrix[i+k] = {j+k : 1., j_nom : -max_pu.at[sn, unit]}
+                constraint_matrix[i-len(network.constraints)+k] = {j+k : 1., j_nom : -max_pu.at[sn, unit]}
 
-        add_constraints(network,"{}-{}_upper".format(component,attr),constraints)
+        add_constraints(network,"{}-{}_upper".format(component,attr),constraints,constraint_matrix)
 
 
 def define_generator_constraints(network,snapshots):
@@ -206,6 +244,7 @@ def define_passive_branch_constraints(network,snapshots):
             calculate_B_H(sub_network)
 
     c = 0
+    constraint_matrix = {}
     for subnetwork in network.sub_networks.obj:
 
         branches = subnetwork.branches()
@@ -220,6 +259,7 @@ def define_passive_branch_constraints(network,snapshots):
             i = len(network.constraints) + c*len(snapshots)
             for k,sn in enumerate(snapshots):
                 network.constraint_matrix[i+k] = {}
+                constraint_matrix[i-len(network.constraints)+k] = {}
 
             for cycle_i in cycle_is:
                 branch_idx = branches.index[cycle_i]
@@ -228,6 +268,7 @@ def define_passive_branch_constraints(network,snapshots):
                 j = network.variables.at[("{}-s".format(branch_idx[0]),branch_idx[1],snapshots[0]),"i"]
                 for k,sn in enumerate(snapshots):
                     network.constraint_matrix[i+k][j+k] = attribute_value
+                    constraint_matrix[i-len(network.constraints)+k][j+k] = attribute_value
             c+=1
 
     constraints = pd.DataFrame(index=pd.MultiIndex.from_product([range(c),snapshots],
@@ -238,7 +279,7 @@ def define_passive_branch_constraints(network,snapshots):
     constraints["rhs"] = 0.
     constraints["i"] = range(len(constraints))
 
-    add_constraints(network,"Cycle",constraints)
+    add_constraints(network,"Cycle",constraints,constraint_matrix)
 
 def define_store_constraints(network,snapshots):
 
@@ -265,6 +306,7 @@ def define_store_constraints(network,snapshots):
     constraints["sense"] = "=="
     constraints["rhs"] = 0.
     constraints["i"] = range(len(constraints))
+    constraint_matrix = {}
 
     stores = network.stores
 
@@ -275,21 +317,27 @@ def define_store_constraints(network,snapshots):
         standing_loss = stores.at[store,"standing_loss"]
         for k,sn in enumerate(snapshots):
             network.constraint_matrix[i+k] = {j_e+k : -1.}
+            constraint_matrix[i-len(network.constraints)+k] = {j_e+k : -1.}
 
             elapsed_hours = network.snapshot_weightings[sn]
 
             if k == 0:
                 if stores.at[store,"e_cyclic"]:
                     network.constraint_matrix[i+k][j_e+len(snapshots)-1] = (1-standing_loss)**elapsed_hours
+                    constraint_matrix[i-len(network.constraints)+k][j_e+len(snapshots)-1] = (1-standing_loss)**elapsed_hours
                 else:
                     constraints.at[(store,sn),"rhs"] = -((1-standing_loss)**elapsed_hours
                                                          * stores.at[store,"e_initial"])
             else:
                 network.constraint_matrix[i+k][j_e+k-1] = (1-standing_loss)**elapsed_hours
+                constraint_matrix[i-len(network.constraints)+k][j_e+k-1] = (1-standing_loss)**elapsed_hours
+
 
             network.constraint_matrix[i+k][j_p+k] =  -elapsed_hours
+            constraint_matrix[i-len(network.constraints)+k][j_p+k] =  -elapsed_hours
 
-    add_constraints(network,"Store",constraints)
+
+    add_constraints(network,"Store",constraints,constraint_matrix)
 
 
 def define_nodal_balance_constraints(network,snapshots):
@@ -301,11 +349,14 @@ def define_nodal_balance_constraints(network,snapshots):
     constraints["rhs"] = -get_switchable_as_dense(network, 'Load', 'p_set', snapshots).multiply(network.loads.sign).groupby(network.loads.bus,axis=1).sum().reindex(columns=network.buses.index,fill_value=0.).stack().swaplevel()
     constraints["sense"] = "=="
     constraints["i"] = range(len(constraints))
+    constraint_matrix = {}
+
 
     for bus in network.buses.index:
         i = len(network.constraints) + constraints.at[(bus,snapshots[0]),"i"]
         for k in range(len(snapshots)):
             network.constraint_matrix[i+k] = {}
+            constraint_matrix[i-len(network.constraints)+k] = {}
 
     for component in ["Generator","Store"]:
         df = getattr(network,network.components[component]["list_name"])
@@ -316,6 +367,7 @@ def define_nodal_balance_constraints(network,snapshots):
             j = network.variables.at[(component+"-p",unit,snapshots[0]),"i"]
             for k,sn in enumerate(snapshots):
                 network.constraint_matrix[i+k][j+k] = sign
+                constraint_matrix[i-len(network.constraints)+k][j+k] = sign
 
     efficiency = get_switchable_as_dense(network, 'Link', 'efficiency', snapshots)
 
@@ -328,6 +380,8 @@ def define_nodal_balance_constraints(network,snapshots):
         for k,sn in enumerate(snapshots):
             network.constraint_matrix[i0+k][j+k] = -1.
             network.constraint_matrix[i1+k][j+k] = efficiency.at[sn,link]
+            constraint_matrix[i0-len(network.constraints)+k][j+k] = -1.
+            constraint_matrix[i1-len(network.constraints)+k][j+k] = efficiency.at[sn,link]
 
     #Add any other buses to which the links are attached
     for i in [int(col[3:]) for col in network.links.columns if col[:3] == "bus" and col not in ["bus0","bus1"]]:
@@ -338,6 +392,7 @@ def define_nodal_balance_constraints(network,snapshots):
             j = network.variables.at[("Link-p",link,snapshots[0]),"i"]
             for k,sn in enumerate(snapshots):
                 network.constraint_matrix[ii+k][j+k] = efficiency.at[sn,link]
+                constraint_matrix[ii-len(network.constraints)+k][j+k] = efficiency.at[sn,link]
 
     for component in network.passive_branch_components:
         df = getattr(network,network.components[component]["list_name"])
@@ -350,9 +405,12 @@ def define_nodal_balance_constraints(network,snapshots):
             for k,sn in enumerate(snapshots):
                 network.constraint_matrix[i0+k][j+k] = -1.
                 network.constraint_matrix[i1+k][j+k] = 1.
+                constraint_matrix[i0-len(network.constraints)+k][j+k] = -1.
+                constraint_matrix[i1-len(network.constraints)+k][j+k] = 1.
 
 
-    add_constraints(network,"nodal_balance",constraints)
+
+    add_constraints(network,"nodal_balance",constraints,constraint_matrix)
 
 
 
@@ -366,6 +424,7 @@ def define_global_constraints(network,snapshots):
     constraints = pd.DataFrame(index=gcs,
                                columns=["sense","rhs"])
     constraints["i"] = range(len(constraints))
+    constraint_matrix = {}
 
     for k,gc in enumerate(gcs):
         if network.global_constraints.loc[gc,"type"] == "primary_energy":
@@ -374,6 +433,7 @@ def define_global_constraints(network,snapshots):
 
             i = len(network.constraints) + k
             network.constraint_matrix[i] = {}
+            constraint_matrix[i-len(network.constraints)] = {}
 
             carrier_attribute = network.global_constraints.loc[gc,"carrier_attribute"]
 
@@ -389,6 +449,9 @@ def define_global_constraints(network,snapshots):
                         network.constraint_matrix[i][j+k] =(attribute
                                                             * (1/network.generators.at[gen,"efficiency"])
                                                             * network.snapshot_weightings[sn])
+                        constraint_matrix[i-len(network.constraints)][j+k] = (attribute
+                                                                              * (1/network.generators.at[gen,"efficiency"])
+                                                                              * network.snapshot_weightings[sn])
 
                 #for stores, inherit the carrier from the bus
                 #take difference of energy at end and start of period
@@ -396,9 +459,11 @@ def define_global_constraints(network,snapshots):
                 for store in stores:
                     j = network.variables.at[("Store-e",store,snapshots[-1]),"i"]
                     network.constraint_matrix[i][j] = -attribute
+                    constraint_matrix[i-len(network.constraints)][j] = -attribute
                     constraints.at[gc,"rhs"] -= attribute*network.stores.at[store,"e_initial"]
 
-    add_constraints(network,"global_constraints",constraints)
+
+    add_constraints(network,"global_constraints",constraints,constraint_matrix)
 
 
 def problem_to_lp(network,filename):
@@ -531,6 +596,20 @@ def prepare_lopf_problem(network,snapshots):
    network.constraints = pd.DataFrame()
    network.constraint_matrix = {}
 
+   network.variable_positions = pd.DataFrame(columns=["start","finish"])
+   network.constraint_positions = pd.DataFrame(columns=["start","finish"])
+   network.n_variables = 0
+   network.n_constraints = 0
+
+   network.objective_f = open("objective.txt","w")
+   network.objective_f.write('\\* LOPF \*\\n\nmin\nobj:\n')
+
+   network.constraints_f = open("constraints.txt","w")
+   network.constraints_f.write("\n\ns.t.\n\n")
+
+   network.bounds_f = open("bounds.txt","w")
+   network.bounds_f.write("\nbounds\n")
+
    logger.info("before gen %s",dt.datetime.now()-now)
    define_generator_constraints(network,snapshots)
    logger.info("before link %s",dt.datetime.now()-now)
@@ -543,6 +622,15 @@ def prepare_lopf_problem(network,snapshots):
    define_nodal_balance_constraints(network,snapshots)
    logger.info("before global %s",dt.datetime.now()-now)
    define_global_constraints(network,snapshots)
+
+   network.bounds_f.write("end\n")
+
+   network.objective_f.close()
+   network.constraints_f.close()
+   network.bounds_f.close()
+
+   os.system("cat objective.txt constraints.txt bounds.txt > problem.lp")
+
 
 def network_lopf(network, snapshots=None, solver_name="cbc",skip_pre=False,formulation="kirchhoff",solver_logfile=None,
                  solver_options={}):
