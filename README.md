@@ -56,17 +56,22 @@ nomopyomo.network_lopf(network, solver_name="cbc")
 
 # How it works
 
-nomopyomo gives each variable and constraint a unique integer
- label. This is determined by an implicit ordering of the variables
- and constraints. Within each group (shown below), the variables are
- indexed in order by several index sets. The start and finish integers
- for each group are stored in the pandas.DataFrames
- `network.variable_positions` and `network.constraint_positions`.
+nomopyomo gives each variable and constraint a unique integer label,
+then writes the linear objective function, variable bounds and
+constraints to a .lp problem file. It is solved, then the result is
+read back in. nomopyomo stores very little in memory beyond the
+original pypsa.Network.
+
+The integer assignments are determined by an implicit ordering of the
+variables and constraints. Within each group (shown below), the
+variables are indexed in order by several index sets. The start and
+finish integers for each group are stored in the pandas.DataFrames
+`network.variable_positions` and `network.constraint_positions`.
 
 The variables are organised into the following groups:
 
 | group name | variables | index by |
-| --- | --- |
+| --- | --- | --- |
 | Generator-p | generator dispatch | network.generators.index, snapshots |
 | Generator-p_nom | extendable generator capacity | network.generators.index[network.generator.p_nom_extendable] |
 | Link-p | link dispatch | network.links.index, snapshots |
@@ -84,7 +89,7 @@ The variables are organised into the following groups:
 The constraints are organised into the following groups:
 
 | group name | constraints | index by |
-| --- | --- |
+| --- | --- | --- |
 | Generator-p_lower | dispatch for extendable generators | network.generators.index[network.generator.p_nom_extendable], snapshots |
 | Generator-p_upper | dispatch for extendable generators | network.generators.index[network.generator.p_nom_extendable], snapshots |
 | etc for other components | |
