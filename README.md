@@ -4,7 +4,8 @@
 This script takes an unsolved [PyPSA](https://github.com/PyPSA/PyPSA)
 network and solves an investment and operation linear optimisation
 problem with power flow (LOPF) using a custom handler for the
-optimisation solver, rather than pyomo.
+optimisation solver, rather than the [pyomo](http://www.pyomo.org)
+optimisation framework used by PyPSA.
 
 nomopyomo is both faster than pyomo and uses considerably less
 memory.
@@ -12,7 +13,10 @@ memory.
 Here is an example of the memory usage when solving investments and
 operation for a zero-net-emission sector-coupled 50-node model of
 Europe 3-hourly for a year (9 million variables, 5 milion constraints,
-22 million non-zero values in the constraint matrix):
+22 million non-zero values in the constraint matrix). Pyomo takes up
+more than three quarters of the total memory used, whereas nomopyomo
+is so memory-efficient that the solver gurobi dominates the memory
+usage.
 
 ![pyomo-nomopyomo comparison](https://www.nworbmot.org/pyomo-versus-nomopyomo-190826-1500.png)
 
@@ -33,12 +37,12 @@ It has been tested against the standard PyPSA examples.
 
 TODO:
 
-- implement glpk solver
-- allow extra functionality
 - constant term in objective function
 - handle non-optimal solutions
 - extract dual variables
 - extract voltage angles
+- implement glpk solver
+- logfile for cbc
 
 No planned support for StorageUnit (replace with Store and Links
 following [this
@@ -90,13 +94,13 @@ The constraints are organised into the following groups:
 
 | group name | constraints | index by |
 | --- | --- | --- |
-| Generator-p_lower | dispatch for extendable generators | network.generators.index[network.generator.p_nom_extendable], snapshots |
-| Generator-p_upper | dispatch for extendable generators | network.generators.index[network.generator.p_nom_extendable], snapshots |
+| Generator-p_lower | dispatch limit for extendable generators | network.generators.index[network.generator.p_nom_extendable], snapshots |
+| Generator-p_upper | dispatch limit for extendable generators | network.generators.index[network.generator.p_nom_extendable], snapshots |
 | etc for other components | |
 | Cycle | Kirchhoff Voltage Law for passive branches | cycles, snapshots |
 | Store | store state of charge consistency | network.stores.index, snapshots |
-| nodal_balance | energy conservation | network.buses.index, snapshots |
-| global_constraints | constraints on e.g. CO2 emission | network.global_constraints.index |
+| nodal_balance | energy conservation at each bus | network.buses.index, snapshots |
+| global_constraints | constraints on e.g. CO2 emissions | network.global_constraints.index |
 
 # Licence
 

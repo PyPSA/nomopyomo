@@ -27,7 +27,7 @@ import pandas as pd
 import numpy as np
 import datetime as dt
 
-import os, gc, string, random
+import os, gc, string, random, subprocess
 
 import logging
 logger = logging.getLogger(__name__)
@@ -375,12 +375,15 @@ def define_global_constraints(network,snapshots):
             write_constraint(network,constraint_matrix_row,network.global_constraints.loc[gc,"sense"],rhs,start+i)
 
 
-def run_cbc(filename,sol_filename,solver_options,keep_files):
+def run_cbc(filename,sol_filename,solver_logfile,solver_options,keep_files):
     options = "" #-dualsimplex -primalsimplex
     command = "cbc -printingOptions all -import {} -stat=1 -solve {} -solu {}".format(filename,options,sol_filename)
     logger.info("Running command:")
     logger.info(command)
     os.system(command)
+    #logfile = open(solver_logfile, 'w')
+    #status = subprocess.run(["cbc",command[4:]], bufsize=0, stdout=logfile)
+    #logfile.close()
 
     if not keep_files:
        os.system("rm "+ filename)
@@ -439,7 +442,7 @@ def read_gurobi(network,sol_filename,keep_files):
 
 
 
-def assign_solution(network,snapshots,variables_sol):
+def assign_solution(network,snapshots,variables_sol,extra_postprocessing):
 
     allocate_series_dataframes(network, {'Generator': ['p'],
                                          'Load': ['p'],
@@ -496,7 +499,11 @@ def assign_solution(network,snapshots,variables_sol):
             df.loc[ext,attr+"_nom_opt"] = variables_sol[start:finish].values
 
 
-def prepare_lopf_problem(network,snapshots,problem_file,keep_files):
+    if extra_postprocessing is not None:
+        extra_postprocessing(network,snapshots,variables_sol)
+
+
+def prepare_lopf_problem(network,snapshots,problem_file,keep_files,extra_functionality):
 
    network.variable_positions = pd.DataFrame(columns=["start","finish"])
    network.constraint_positions = pd.DataFrame(columns=["start","finish"])
@@ -526,6 +533,9 @@ def prepare_lopf_problem(network,snapshots,problem_file,keep_files):
    logger.info("before global %s",dt.datetime.now()-now)
    define_global_constraints(network,snapshots)
 
+   if extra_functionality is not None:
+       extra_functionality(network,snapshots)
+
    network.bounds_f.write("end\n")
 
    network.objective_f.close()
@@ -539,7 +549,9 @@ def prepare_lopf_problem(network,snapshots,problem_file,keep_files):
            os.system("rm "+ fn)
 
 
-def network_lopf(network, snapshots=None, solver_name="cbc",skip_pre=False,formulation="kirchhoff",solver_logfile=None,
+def network_lopf(network, snapshots=None, solver_name="cbc",solver_logfile=None,skip_pre=False,
+                 extra_functionality=None,extra_postprocessing=None,
+                 formulation="kirchhoff",
                  solver_options={},keep_files=False):
     """
     Linear optimal power flow for a group of snapshots.
@@ -552,9 +564,6 @@ def network_lopf(network, snapshots=None, solver_name="cbc",skip_pre=False,formu
     solver_name : string
         Must be a solver name that pyomo recognises and that is
         installed, e.g. "glpk", "gurobi"
-    solver_io : string, default None
-        Solver Input-Output option, e.g. "python" to use "gurobipy" for
-        solver_name="gurobi"
     skip_pre : bool, default False
         Skip the preliminary steps of computing topology, calculating
         dependent values and finding bus controls.
@@ -573,14 +582,8 @@ def network_lopf(network, snapshots=None, solver_name="cbc",skip_pre=False,formu
         Keep the files that pyomo constructs from OPF problem
         construction, e.g. .lp file - useful for debugging
     formulation : string
-        Formulation of the linear power flow equations to use; must be
-        one of ["angles","cycles","kirchhoff","ptdf"]
-    ptdf_tolerance : float
-        Value below which PTDF entries are ignored
-    free_memory : set, default {'pyomo'}
-        Any subset of {'pypsa', 'pyomo'}. Allows to stash `pypsa` time-series
-        data away while the solver runs (as a pickle to disk) and/or free
-        `pyomo` data after the solution has been extracted.
+        Formulation of the linear power flow equations to use; only "kirchhoff"
+        is currently supported
     extra_postprocessing : callable function
         This function must take three arguments
         `extra_postprocessing(network,snapshots,duals)` and is called after
@@ -611,25 +614,26 @@ def network_lopf(network, snapshots=None, solver_name="cbc",skip_pre=False,formu
     network.identifier = ''.join(random.choice(string.ascii_lowercase) for i in range(8))
     problem_file = "/tmp/test-{}.lp".format(network.identifier)
     solution_file = "/tmp/test-{}.sol".format(network.identifier)
-    log_file = "/tmp/test-{}.log".format(network.identifier)
+    if solver_logfile is None:
+        solver_logfile = "/tmp/test-{}.log".format(network.identifier)
 
     logger.info("before prep %s",dt.datetime.now()-now)
-    prepare_lopf_problem(network,snapshots,problem_file,keep_files)
+    prepare_lopf_problem(network,snapshots,problem_file,keep_files,extra_functionality)
     gc.collect()
 
     logger.info("before run %s",dt.datetime.now()-now)
 
     if solver_name == "cbc":
-        run_cbc(problem_file,solution_file,solver_options,keep_files)
+        run_cbc(problem_file,solution_file,solver_logfile,solver_options,keep_files)
         logger.info("before read %s",dt.datetime.now()-now)
         variables_sol = read_cbc(network,solution_file,keep_files)
     elif solver_name == "gurobi":
-        run_gurobi(problem_file,solution_file,log_file,solver_options,keep_files)
+        run_gurobi(problem_file,solution_file,solver_logfile,solver_options,keep_files)
         logger.info("before read %s",dt.datetime.now()-now)
         variables_sol = read_gurobi(network,solution_file,keep_files)
 
     gc.collect()
     logger.info("before assign %s",dt.datetime.now()-now)
-    assign_solution(network,snapshots,variables_sol)
+    assign_solution(network,snapshots,variables_sol,extra_postprocessing)
     logger.info("end %s",dt.datetime.now()-now)
     gc.collect()
