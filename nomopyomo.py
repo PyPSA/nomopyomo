@@ -377,6 +377,7 @@ def define_global_constraints(network,snapshots):
 
 def run_cbc(filename,sol_filename,solver_logfile,solver_options,keep_files):
     options = "" #-dualsimplex -primalsimplex
+    #printingOptions is about what goes in solution file
     command = "cbc -printingOptions all -import {} -stat=1 -solve {} -solu {}".format(filename,options,sol_filename)
     logger.info("Running command:")
     logger.info(command)
@@ -418,10 +419,14 @@ def read_cbc(network,sol_filename,keep_files):
     variables_sol = sol.loc[variables,2].astype(float)
     variables_sol.index = sol.loc[variables,1].str[1:].astype(int)
 
+    constraints = sol.index[sol[1].str[:1] == "c"]
+    constraints_dual = sol.loc[constraints,3].astype(float)
+    constraints_dual.index = sol.loc[constraints,1].str[1:].astype(int)
+
     if not keep_files:
        os.system("rm "+ sol_filename)
 
-    return variables_sol
+    return variables_sol,constraints_dual
 
 
 def read_gurobi(network,sol_filename,keep_files):
@@ -442,7 +447,7 @@ def read_gurobi(network,sol_filename,keep_files):
 
 
 
-def assign_solution(network,snapshots,variables_sol,extra_postprocessing):
+def assign_solution(network,snapshots,variables_sol,constraints_dual,extra_postprocessing):
 
     allocate_series_dataframes(network, {'Generator': ['p'],
                                          'Load': ['p'],
@@ -498,6 +503,11 @@ def assign_solution(network,snapshots,variables_sol,extra_postprocessing):
             start,finish = network.variable_positions.loc["{}-{}_nom".format(component,attr)]
             df.loc[ext,attr+"_nom_opt"] = variables_sol[start:finish].values
 
+    #marginal prices
+    if constraints_dual is not None:
+        start,finish = network.constraint_positions.loc["nodal_balance"]
+        network.buses_t.marginal_price.loc[snapshots,network.buses.index] = pd.Series(data=constraints_dual[start:finish].values,
+                                                                                      index=pd.MultiIndex.from_product([network.buses.index,snapshots])).unstack(level=0)[network.buses.index]
 
     if extra_postprocessing is not None:
         extra_postprocessing(network,snapshots,variables_sol)
@@ -626,14 +636,15 @@ def network_lopf(network, snapshots=None, solver_name="cbc",solver_logfile=None,
     if solver_name == "cbc":
         run_cbc(problem_file,solution_file,solver_logfile,solver_options,keep_files)
         logger.info("before read %s",dt.datetime.now()-now)
-        variables_sol = read_cbc(network,solution_file,keep_files)
+        variables_sol,constraints_dual = read_cbc(network,solution_file,keep_files)
     elif solver_name == "gurobi":
         run_gurobi(problem_file,solution_file,solver_logfile,solver_options,keep_files)
         logger.info("before read %s",dt.datetime.now()-now)
         variables_sol = read_gurobi(network,solution_file,keep_files)
+        constraints_dual = None
 
     gc.collect()
     logger.info("before assign %s",dt.datetime.now()-now)
-    assign_solution(network,snapshots,variables_sol,extra_postprocessing)
+    assign_solution(network,snapshots,variables_sol,constraints_dual,extra_postprocessing)
     logger.info("end %s",dt.datetime.now()-now)
     gc.collect()

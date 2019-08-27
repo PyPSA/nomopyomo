@@ -39,7 +39,7 @@ TODO:
 
 - constant term in objective function
 - handle non-optimal solutions
-- extract dual variables
+- extract dual variables for gurobi
 - extract voltage angles
 - implement glpk solver
 - logfile for cbc
