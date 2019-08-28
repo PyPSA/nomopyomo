@@ -459,24 +459,30 @@ def assign_solution(network,snapshots,variables_sol,constraints_dual,extra_postp
                                          'Link': ["p"+col[3:] for col in network.links.columns if col[:3] == "bus"]
                                                   +['mu_lower', 'mu_upper']})
 
+    def set_from_series(df, series):
+        df.loc[snapshots] = series.unstack(0).reindex(columns=df.columns)
 
     if len(network.generators) > 0:
         start,finish = network.variable_positions.loc["Generator-p"]
-        network.generators_t.p.loc[snapshots,network.generators.index] = pd.Series(data=variables_sol[start:finish].values,
-                                                                                   index=pd.MultiIndex.from_product([network.generators.index,snapshots])).unstack(level=0)[network.generators.index]
+        set_from_series(network.generators_t.p,
+                        pd.Series(data=variables_sol[start:finish].values,
+                                  index=pd.MultiIndex.from_product([network.generators.index,snapshots])))
 
     if len(network.stores) > 0:
         start,finish = network.variable_positions.loc["Store-p"]
-        network.stores_t.p.loc[snapshots,network.stores.index] = pd.Series(data=variables_sol[start:finish].values,
-                                                                           index=pd.MultiIndex.from_product([network.stores.index,snapshots])).unstack(level=0)[network.stores.index]
+        set_from_series(network.stores_t.p,
+                        pd.Series(data=variables_sol[start:finish].values,
+                                  index=pd.MultiIndex.from_product([network.stores.index,snapshots])))
         start,finish = network.variable_positions.loc["Store-e"]
-        network.stores_t.e.loc[snapshots,network.stores.index] = pd.Series(data=variables_sol[start:finish].values,
-                                                                           index=pd.MultiIndex.from_product([network.stores.index,snapshots])).unstack(level=0)[network.stores.index]
+        set_from_series(network.stores_t.e ,
+                        pd.Series(data=variables_sol[start:finish].values,
+                                  index=pd.MultiIndex.from_product([network.stores.index,snapshots])))
 
     if len(network.links) > 0:
         start,finish = network.variable_positions.loc["Link-p"]
-        network.links_t.p0.loc[snapshots,network.links.index] = pd.Series(data=variables_sol[start:finish].values,
-                                                          index=pd.MultiIndex.from_product([network.links.index,snapshots])).unstack(level=0)[network.links.index]
+        set_from_series(network.links_t.p0,
+                        pd.Series(data=variables_sol[start:finish].values,
+                                  index=pd.MultiIndex.from_product([network.links.index,snapshots])))
         efficiency = get_switchable_as_dense(network, 'Link', 'efficiency', snapshots)
         network.links_t.p1.loc[snapshots,network.links.index] = -network.links_t.p0.loc[snapshots,network.links.index]*efficiency.loc[snapshots,network.links.index]
         for i in [int(col[3:]) for col in network.links.columns if col[:3] == "bus" and col not in ["bus0","bus1"]]:
@@ -485,8 +491,9 @@ def assign_solution(network,snapshots,variables_sol,constraints_dual,extra_postp
 
     for c in network.iterate_components(network.passive_branch_components):
         start,finish = network.variable_positions.loc["{}-s".format(c.name)]
-        c.pnl.p0.loc[snapshots,c.df.index] = pd.Series(data=variables_sol[start:finish].values,
-                                            index=pd.MultiIndex.from_product([c.df.index,snapshots])).unstack(level=0)[c.df.index]
+        set_from_series(c.pnl.p0,
+                        pd.Series(data=variables_sol[start:finish].values,
+                                  index=pd.MultiIndex.from_product([c.df.index,snapshots])))
         c.pnl.p1.loc[snapshots,c.df.index] = - c.pnl.p0.loc[snapshots,c.df.index]
 
     for component in ["Generator","Link","Store","Line","Transformer"]:
@@ -506,8 +513,11 @@ def assign_solution(network,snapshots,variables_sol,constraints_dual,extra_postp
     #marginal prices
     if constraints_dual is not None:
         start,finish = network.constraint_positions.loc["nodal_balance"]
-        network.buses_t.marginal_price.loc[snapshots,network.buses.index] = pd.Series(data=constraints_dual[start:finish].values,
-                                                                                      index=pd.MultiIndex.from_product([network.buses.index,snapshots])).unstack(level=0)[network.buses.index]
+        set_from_series(network.buses_t.marginal_price,
+                        pd.Series(data=constraints_dual[start:finish].values,
+                                  index=pd.MultiIndex.from_product([network.buses.index,snapshots])))
+        #correct for snapshot weightings
+        network.buses_t.marginal_price.loc[snapshots] = network.buses_t.marginal_price.loc[snapshots].divide(network.snapshot_weightings.loc[snapshots],axis=0)
 
     if extra_postprocessing is not None:
         extra_postprocessing(network,snapshots,variables_sol)
