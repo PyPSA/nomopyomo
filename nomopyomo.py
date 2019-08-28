@@ -27,7 +27,7 @@ import pandas as pd
 import numpy as np
 import datetime as dt
 
-import os, gc, string, random, subprocess
+import os, gc, string, random, subprocess, pyomo
 
 import logging
 logger = logging.getLogger(__name__)
@@ -389,17 +389,22 @@ def run_cbc(filename,sol_filename,solver_logfile,solver_options,keep_files):
     if not keep_files:
        os.system("rm "+ filename)
 
-def run_gurobi(filename,sol_filename,solver_logfile,solver_options,keep_files):
-    options = "" #-dualsimplex -primalsimplex
-    command = "gurobi_cl"
+def run_gurobi(network,filename,sol_filename,solver_logfile,solver_options,keep_files):
 
-    if solver_logfile is not None:
-        command += " logfile=" + solver_logfile
+    solver_options["logfile"] = solver_logfile
 
-    for k,v in solver_options.items():
-        command += " {}={}".format(k,v)
+    script_fn = "/tmp/gurobi-{}.script".format(network.identifier)
+    script_f = open(script_fn,"w")
+    script_f.write('import sys\n')
+    script_f.write('from gurobipy import *\n')
+    script_f.write('sys.path.append("{}/solvers/plugins/solvers")\n'.format(os.path.dirname(pyomo.__file__)))
+    script_f.write('from GUROBI_RUN import *\n')
+    #2nd argument is warmstart
+    script_f.write('gurobi_run("{}",{},"{}",None,{},["dual"],)\n'.format(filename,None,sol_filename,solver_options))
+    script_f.write('quit()\n')
+    script_f.close()
 
-    command += " QCPDual=1 resultfile={} {}".format(sol_filename,filename)
+    command = "gurobi.sh {}".format(script_fn)
 
     logger.info("Running command:")
     logger.info(command)
@@ -407,6 +412,7 @@ def run_gurobi(filename,sol_filename,solver_logfile,solver_options,keep_files):
 
     if not keep_files:
         os.system("rm "+ filename)
+        os.system("rm "+ script_fn)
 
 def read_cbc(network,sol_filename,keep_files):
     f = open(sol_filename,"r")
@@ -431,19 +437,25 @@ def read_cbc(network,sol_filename,keep_files):
 
 def read_gurobi(network,sol_filename,keep_files):
     f = open(sol_filename,"r")
-    for i in range(2):
+    for i in range(23):
         data = f.readline()
         logger.info(data)
     f.close()
-    sol = pd.read_csv(sol_filename,header=None,skiprows=2,sep=" ")
+    sol = pd.read_csv(sol_filename,header=None,skiprows=23,sep=":")
 
-    variables_sol = sol[1].astype(float)
-    variables_sol.index = sol[0].str[1:].astype(int)
+
+    variables = sol.index[sol[1].str[:2] == " x"]
+    variables_sol = sol.loc[variables,2].astype(float)
+    variables_sol.index = sol.loc[variables,1].str[2:].astype(int)
+
+    constraints = sol.index[sol[1].str[:2] == " c"]
+    constraints_dual = sol.loc[constraints,2].astype(float)
+    constraints_dual.index = sol.loc[constraints,1].str[2:].astype(int)
 
     if not keep_files:
        os.system("rm "+ sol_filename)
 
-    return variables_sol
+    return variables_sol,constraints_dual
 
 
 
@@ -648,10 +660,9 @@ def network_lopf(network, snapshots=None, solver_name="cbc",solver_logfile=None,
         logger.info("before read %s",dt.datetime.now()-now)
         variables_sol,constraints_dual = read_cbc(network,solution_file,keep_files)
     elif solver_name == "gurobi":
-        run_gurobi(problem_file,solution_file,solver_logfile,solver_options,keep_files)
+        run_gurobi(network,problem_file,solution_file,solver_logfile,solver_options,keep_files)
         logger.info("before read %s",dt.datetime.now()-now)
-        variables_sol = read_gurobi(network,solution_file,keep_files)
-        constraints_dual = None
+        variables_sol,constraints_dual = read_gurobi(network,solution_file,keep_files)
 
     gc.collect()
     logger.info("before assign %s",dt.datetime.now()-now)
