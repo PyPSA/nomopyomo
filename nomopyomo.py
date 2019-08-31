@@ -398,6 +398,7 @@ def run_gurobi(network,filename,sol_filename,solver_logfile,solver_options,keep_
     script_f.write('import sys\n')
     script_f.write('from gurobipy import *\n')
     script_f.write('sys.path.append("{}/solvers/plugins/solvers")\n'.format(os.path.dirname(pyomo.__file__)))
+    #script_f.write('sys.path.append("{}")\n'.format(os.path.dirname(__file__)))
     script_f.write('from GUROBI_RUN import *\n')
     #2nd argument is warmstart
     script_f.write('gurobi_run("{}",{},"{}",None,{},["dual"],)\n'.format(filename,None,sol_filename,solver_options))
@@ -419,6 +420,20 @@ def read_cbc(network,sol_filename,keep_files):
     data = f.readline()
     logger.info(data)
     f.close()
+
+    status = "ok"
+
+    if data[:len("Optimal - objective value ")] == "Optimal - objective value ":
+        termination_condition = "optimal"
+        network.objective = float(data[len("Optimal - objective value "):])
+    elif "Infeasible" in data:
+        termination_condition = "infeasible"
+    else:
+        termination_condition = "other"
+
+    if termination_condition != "optimal":
+        return status, termination_condition, None, None
+
     sol = pd.read_csv(sol_filename,header=None,skiprows=1,sep=r"\s+")
 
     variables = sol.index[sol[1].str[:1] == "x"]
@@ -432,7 +447,7 @@ def read_cbc(network,sol_filename,keep_files):
     if not keep_files:
        os.system("rm "+ sol_filename)
 
-    return variables_sol,constraints_dual
+    return status,termination_condition,variables_sol,constraints_dual
 
 
 def read_gurobi(network,sol_filename,keep_files):
@@ -455,7 +470,10 @@ def read_gurobi(network,sol_filename,keep_files):
     if not keep_files:
        os.system("rm "+ sol_filename)
 
-    return variables_sol,constraints_dual
+    status = "ok"
+    termination_condition = "optimal"
+
+    return status,termination_condition,variables_sol,constraints_dual
 
 
 
@@ -658,14 +676,19 @@ def network_lopf(network, snapshots=None, solver_name="cbc",solver_logfile=None,
     if solver_name == "cbc":
         run_cbc(problem_file,solution_file,solver_logfile,solver_options,keep_files)
         logger.info("before read %s",dt.datetime.now()-now)
-        variables_sol,constraints_dual = read_cbc(network,solution_file,keep_files)
+        status,termination_condition,variables_sol,constraints_dual = read_cbc(network,solution_file,keep_files)
     elif solver_name == "gurobi":
         run_gurobi(network,problem_file,solution_file,solver_logfile,solver_options,keep_files)
         logger.info("before read %s",dt.datetime.now()-now)
-        variables_sol,constraints_dual = read_gurobi(network,solution_file,keep_files)
+        status,termination_condition,variables_sol,constraints_dual = read_gurobi(network,solution_file,keep_files)
+
+    if termination_condition != "optimal":
+        return status,termination_condition
 
     gc.collect()
     logger.info("before assign %s",dt.datetime.now()-now)
     assign_solution(network,snapshots,variables_sol,constraints_dual,extra_postprocessing)
     logger.info("end %s",dt.datetime.now()-now)
     gc.collect()
+
+    return status,termination_condition

@@ -26,3 +26,5 @@ opf.py
 *.sol
 
 mem_test
+
+GUROBI_RUN*
