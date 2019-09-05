@@ -23,7 +23,7 @@ from pypsa.pf import find_cycles as find_cycles, _as_snapshots
 import pandas as pd
 import numpy as np
 
-import os, gc, string, random, time, csv
+import os, gc, string, random, time, csv, pyomo
 
 import logging
 logger = logging.getLogger(__name__)
@@ -193,11 +193,11 @@ def define_dispatch_for_extendable_constraints(n, snapshots, component, attr):
 
     lhs = numerical_to_string(max_pu) + ' ' + wo_prefactor
     constraints = write_constraint(n, lhs, '>=', rhs)
-    set_conref(n, constraints, component, 'upper_bound')
+    set_conref(n, constraints, component, 'mu_upper')
 
     lhs = numerical_to_string(min_pu) + ' ' + wo_prefactor
     constraints = write_constraint(n, lhs, '<=', rhs)
-    set_conref(n, constraints, component, 'lower_bound')
+    set_conref(n, constraints, component, 'mu_lower')
 
 
 def define_nodal_balance_constraints(n, snapshots):
@@ -343,11 +343,11 @@ def prepare_lopf(n, snapshots=None, keep_files=False,
 # solvers, solving, assigning
 # =============================================================================
 
-def run_cbc(filename,sol_filename,solver_logfile,solver_options,keep_files):
+def run_cbc(filename, solution_fn, solver_logfile, solver_options, keep_files):
     options = "" #-dualsimplex -primalsimplex
     #printingOptions is about what goes in solution file
     command = (f"cbc -printingOptions all -import {filename}"
-               f" -stat=1 -solve {options} -solu {sol_filename}")
+               f" -stat=1 -solve {options} -solu {solution_fn}")
     logger.info("Running command:")
     logger.info(command)
     os.system(command)
@@ -358,21 +358,21 @@ def run_cbc(filename,sol_filename,solver_logfile,solver_options,keep_files):
     if not keep_files:
        os.system("rm "+ filename)
 
-def run_gurobi(network,filename, sol_filename, solver_logfile,
+def run_gurobi(n, filename, solution_fn, solver_logfile,
                solver_options, keep_files):
 
     solver_options["logfile"] = solver_logfile
 
-    script_fn = "/tmp/gurobi-{}.script".format(network.identifier)
+    script_fn = "/tmp/gurobi-{}.script".format(n.identifier)
     script_f = open(script_fn,"w")
     script_f.write('import sys\n')
     script_f.write('from gurobipy import *\n')
-    script_f.write('sys.path.append("{os.path.dirname(pyomo.__file__)}'
+    script_f.write(f'sys.path.append("{os.path.dirname(pyomo.__file__)}'
                    '/solvers/plugins/solvers")\n')
     #script_f.write('sys.path.append("{}")\n'.format(os.path.dirname(__file__)))
     script_f.write('from GUROBI_RUN import *\n')
     #2nd argument is warmstart
-    script_f.write(f'gurobi_run("{filename}",None,"{sol_filename}",None,'
+    script_f.write(f'gurobi_run("{filename}",None,"{solution_fn}",None,'
                    f'{solver_options},["dual"],)\n')
     script_f.write('quit()\n')
     script_f.close()
@@ -387,8 +387,9 @@ def run_gurobi(network,filename, sol_filename, solver_logfile,
         os.system("rm "+ filename)
         os.system("rm "+ script_fn)
 
-def read_cbc(network,sol_filename,keep_files):
-    f = open(sol_filename,"r")
+
+def read_cbc(n, solution_fn, keep_files):
+    f = open(solution_fn,"r")
     data = f.readline()
     logger.info(data)
     f.close()
@@ -397,7 +398,7 @@ def read_cbc(network,sol_filename,keep_files):
 
     if data[:len("Optimal - objective value ")] == "Optimal - objective value ":
         termination_condition = "optimal"
-        network.objective = float(data[len("Optimal - objective value "):])
+        n.objective = float(data[len("Optimal - objective value "):])
     elif "Infeasible" in data:
         termination_condition = "infeasible"
     else:
@@ -406,47 +407,76 @@ def read_cbc(network,sol_filename,keep_files):
     if termination_condition != "optimal":
         return status, termination_condition, None, None
 
-    sol = pd.read_csv(sol_filename,header=None,skiprows=1,sep=r"\s+")
-
-    variables = sol.index[sol[1].str[:1] == "x"]
-    variables_sol = sol.loc[variables,2].astype(float)
-#    variables_sol.index = sol.loc[variables,1].str[1:].astype(int)
-
-    constraints = sol.index[sol[1].str[:1] == "c"]
-    constraints_dual = sol.loc[constraints,3].astype(float)
-#    constraints_dual.index = sol.loc[constraints,1].str[1:].astype(int)
+    sol = pd.read_csv(solution_fn, header=None, skiprows=[0],
+                      sep=r'\s+', usecols=[1,2,3], index_col=0)
+    variables_b = sol.index.str[0] == 'x'
+    variables_sol = sol[variables_b][2]
+    constraints_dual = sol[~variables_b][3]
 
     if not keep_files:
-       os.system("rm "+ sol_filename)
+       os.system("rm "+ solution_fn)
 
     return status, termination_condition, variables_sol, constraints_dual
 
 
-def read_gurobi(network,sol_filename,keep_files):
-    f = open(sol_filename,"r")
+def read_gurobi(n, solution_fn, keep_files):
+    f = open(solution_fn,"r")
     for i in range(23):
         data = f.readline()
         logger.info(data)
     f.close()
-    sol = pd.read_csv(sol_filename,header=None,skiprows=23,sep=":")
 
-
-    variables = sol.index[sol[1].str[:2] == " x"]
-    variables_sol = sol.loc[variables,2].astype(float)
-    variables_sol.index = sol.loc[variables,1].str[2:].astype(int)
-
-    constraints = sol.index[sol[1].str[:2] == " c"]
-    constraints_dual = sol.loc[constraints,2].astype(float)
-    constraints_dual.index = sol.loc[constraints,1].str[2:].astype(int)
+    sol = pd.read_csv(solution_fn, header=None, skiprows=range(23),
+                      sep=' ', index_col=0, usecols=[1,3])[3]
+    variables_b = sol.index.str[0] == 'x'
+    variables_sol = sol[variables_b]
+    constraints_dual = sol[~variables_b]
 
     if not keep_files:
-       os.system("rm "+ sol_filename)
+       os.system("rm "+ solution_fn)
 
     status = "ok"
     termination_condition = "optimal"
 
     return status,termination_condition,variables_sol,constraints_dual
 
+
+def assign_solution(n, snapshots, variables_sol, constraints_dual,
+                    extra_postprocessing):
+    #solutions
+    def map_solution(component, attr, pnl=True):
+        if pnl:
+            values = (pnl_var(n, component, attr).stack()
+                      .map(variables_sol).unstack())
+            if component in n.passive_branch_components ^ {'Link'}:
+                n.pnl(component)['p0'] = values
+                n.pnl(component)['p1'] = -values
+            else:
+                n.pnl(component)[attr] = values
+        else:
+            n.df(component)[attr+'_opt'] = (df_var(n, component, attr)
+                                            .map(variables_sol))
+
+    for component, attr in prefixes[n.non_empty_components].items():
+        map_solution(component, attr, pnl=True)
+    for component, attr in (prefixes[n.non_empty_components] + '_nom').items():
+        map_solution(component, attr, pnl=False)
+
+    #duals
+    def map_dual(component, attr, name=None, pnl=True):
+        if name is None: name = attr
+        if pnl:
+            n.pnl(component)[attr] = (pnl_con(n, component, attr).stack()
+                                      .map(variables_sol).unstack())
+        else:
+            n.df(component)[attr] = df_con(n, component, attr).map(variables_sol)
+
+    map_dual('Bus', 'nodal_balance', 'marginal_price')
+    for component in n.non_empty_components:
+        map_dual(component, 'mu_upper')
+        map_dual(component, 'mu_lower')
+
+    return
 
 def lopf(n, snapshots=None, solver_name="cbc",
          solver_logfile=None, skip_pre=False,
@@ -507,10 +537,8 @@ def lopf(n, snapshots=None, solver_name="cbc",
 
     n.identifier = ''.join(random.choice(string.ascii_lowercase)
                         for i in range(8))
-#    n.problem_fn = "/tmp/test-{}.lp".format(network.identifier)
-#    solution_file = "/tmp/test-{}.sol".format(network.identifier)
-    n.problem_fn = "test.lp"
-    solution_fn = "test.sol"
+    n.problem_fn = "/tmp/test-{}.lp".format(n.identifier)
+    solution_fn = "/tmp/test-{}.sol".format(n.identifier)
     if solver_logfile is None:
         solver_logfile = "test.log"
 
@@ -521,29 +549,23 @@ def lopf(n, snapshots=None, solver_name="cbc",
     logger.info("Prepare linear problem")
 
     if solver_name == "cbc":
-        run_cbc(n.problem_fn, solution_fn,
-                solver_logfile, solver_options, keep_files=True)
+        run_cbc(n.problem_fn, solution_fn, solver_logfile,
+                solver_options, keep_files=True)
         res = read_cbc(n, solution_fn, keep_files)
-
     elif solver_name == "gurobi":
-        run_gurobi(n, n.problem_fn, solution_fn,
-                   solver_logfile, solver_options, keep_files)
+        run_gurobi(n, n.problem_fn, solution_fn, solver_logfile,
+                   solver_options, keep_files)
         res = read_gurobi(n, solution_fn, keep_files)
-    return res
     status, termination_condition, variables_sol, constraints_dual = res
-#
-#    if termination_condition != "optimal":
-#        return status,termination_condition
-#
-#    gc.collect()
-#    assign_solution(network, snapshots, variables_sol,
-#                    constraints_dual, extra_postprocessing)
-#    gc.collect()
-#
-#    return status,termination_condition
+
+    if termination_condition != "optimal":
+        return status,termination_condition
+
+    gc.collect()
+    assign_solution(n, snapshots, variables_sol,
+                    constraints_dual, extra_postprocessing)
+    gc.collect()
+
+    return status,termination_condition
 
 
-
-def assign_solution(n, snapshots, variables_sol,
-                    constraints_dual, extra_postprocessing):
-    return
