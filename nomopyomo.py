@@ -75,12 +75,13 @@ prefixes = pd.Series({'Generator': 'p',
 var_ref_suffix = '_varref' # after solving replace with '_opt'
 con_ref_suffix = '_conref' # after solving replace with ''
 
-def numerical_to_string(val):
+def numerical_to_string(val, append_space=True):
     if isinstance(val, (float, int)):
-        return f'+{float(val)}' if val >= 0 else f'{float(val)}'
+        s = f'+{float(val)}' if val >= 0 else f'{float(val)}'
     else:
-        return val.pipe(np.sign).replace([0, 1, -1], ['+', '+', '-'])\
+        s = val.pipe(np.sign).replace([0, 1, -1], ['+', '+', '-'])\
                   .add(abs(val).astype(str)).astype(str)
+    return s + ' ' if append_space else s
 
 x_counter = 0
 def var_array(shape):
@@ -128,7 +129,6 @@ def pnl_con(n, component, attr):
 
 def df_con(n, component, attr):
     return n.df(component)[attr + con_ref_suffix]
-
 
 # 'getter' functions
 def get_extendable_i(n, component):
@@ -191,11 +191,11 @@ def define_dispatch_for_extendable_constraints(n, snapshots, component, attr):
     wo_prefactor = nominal_v + '\n' + '-1.0 ' +  operational_ext_v
     rhs = '0'
 
-    lhs = numerical_to_string(max_pu) + ' ' + wo_prefactor
+    lhs = numerical_to_string(max_pu) + wo_prefactor
     constraints = write_constraint(n, lhs, '>=', rhs)
     set_conref(n, constraints, component, 'mu_upper')
 
-    lhs = numerical_to_string(min_pu) + ' ' + wo_prefactor
+    lhs = numerical_to_string(min_pu) + wo_prefactor
     constraints = write_constraint(n, lhs, '<=', rhs)
     set_conref(n, constraints, component, 'mu_lower')
 
@@ -206,7 +206,7 @@ def define_nodal_balance_constraints(n, snapshots):
         #additional sign only necessary for branches in reverse direction
         if 'sign' in n.df(component):
             sign = sign * n.df(component).sign
-        return (numerical_to_string(sign) + ' ' + pnl_var(n, component, attr))\
+        return (numerical_to_string(sign) + pnl_var(n, component, attr))\
                 .rename(columns=n.df(component)[groupcol])
 
     arg_list = [['Generator', 'p', 'bus', 1],
@@ -227,7 +227,7 @@ def define_nodal_balance_constraints(n, snapshots):
     sense = '='
     rhs = ((- n.loads_t.p_set * n.loads.sign)
            .groupby(n.loads.bus, axis=1).sum()
-           .pipe(numerical_to_string)
+           .pipe(numerical_to_string, append_space=False)
            .reindex(columns=n.buses.index, fill_value='0.0'))
     constraints = write_constraint(n, lhs, sense, rhs)
     set_conref(n, constraints, 'Bus', 'nodal_balance')
@@ -241,8 +241,8 @@ def define_kirchhoff_constraints(n):
 
     def cycle_flow(ds):
         ds = ds[lambda ds: ds!=0.].dropna()
-        return (numerical_to_string(ds) + ' ' +
-               n.lines_t.s_varref[ds.index] + '\n').sum(1)
+        return (numerical_to_string(ds) +
+                n.lines_t.s_varref[ds.index] + '\n').sum(1)
 
     constraints = []
     for sub in n.sub_networks.obj:
@@ -264,6 +264,48 @@ def define_store_constraints(n):
 def define_storage_units_constraints(n):
     return
 
+def define_global_constraints(n, snapshots):
+
+    def join_entries(df): return '\n'.join(df.values.flatten())
+
+    glcs = n.global_constraints.query('type == "primary_energy"')
+    for name, glc in glcs.iterrows():
+        carattr = glc.carrier_attribute
+        emissions = n.carriers.query(f'{carattr} != 0')[carattr]
+        if emissions.empty: continue
+        gens = n.generators.query('carrier in @emissions.index')
+        em_pu = gens.carrier.map(emissions)/gens.efficiency
+        em_pu = n.snapshot_weightings.to_frame() @ em_pu.to_frame('weightings').T
+        lhs = em_pu.pipe(numerical_to_string) \
+                   .add(pnl_var(n, 'Generator', 'p')[gens.index]) \
+                   .pipe(join_entries)
+
+        sus = n.storage_units.query('carrier in @emissions.index and '
+                                    'not cyclic_state_of_charge')
+        if not sus.empty:
+            lhs += (sus.carrier.map(emissions).mul(sus.state_of_charge_initial)
+                    .pipe(numerical_to_string).pipe(join_entries))
+            lhs += (sus.carrier.map(n.emissions).mul(-1)
+                    .pipe(numerical_to_string)
+                    .add(pnl_var(n, 'StorageUnit', 'state_of_charge')
+                        .loc[snapshots[-1], sus.index])
+                    .pipe(join_entries))
+
+        n.stores['carrier'] = n.stores.bus.map(n.buses.carrier)
+        stores = n.stores.query('carrier in @emissions.index and not e_cyclic')
+        if not stores.empty:
+            lhs += (stores.carrier.map(emissions).mul(stores.e_initial)
+                    .pipe(numerical_to_string).pipe(join_entries))
+            lhs += (sus.stores.map(n.emissions).mul(-1)
+                    .pipe(numerical_to_string)
+                    .add(pnl_var(n, 'Store', 'e').loc[snapshots[-1], stores.index])
+                    .pipe(join_entries))
+
+        glcs.loc[name, 'lhs'] = lhs
+    constraints = write_constraint(n, glcs.lhs, glcs.sense.replace('==', '='),
+                                   glcs.constant.pipe(numerical_to_string))
+    set_conref(n, constraints, 'GlobalConstraint', 'mu', pnl=False)
+
 
 def define_objective(n):
     operating = prefixes[n.non_empty_components - n.passive_branch_components]
@@ -272,13 +314,13 @@ def define_objective(n):
                 .loc[:, lambda ds: (ds != 0).all()]
                 .mul(n.snapshot_weightings, axis=0))
         if cost.empty: continue
-        terms = numerical_to_string(cost) + ' ' + pnl_var(n, comp, attr)[cost.columns]
+        terms = numerical_to_string(cost) + pnl_var(n, comp, attr)[cost.columns]
         write_objective(n, terms)
     #investment
     for comp, attr in prefixes[n.non_empty_components].items():
         cost = n.df(comp)['capital_cost'][get_extendable_i(n, comp)]
         if cost.empty: continue
-        terms = numerical_to_string(cost) + ' ' + df_var(n, comp, attr+'_nom')[cost.index]
+        terms = numerical_to_string(cost) + df_var(n, comp, attr+'_nom')[cost.index]
         write_objective(n, terms)
 
 
@@ -319,6 +361,9 @@ def prepare_lopf(n, snapshots=None, keep_files=False,
 
     define_nodal_balance_constraints(n, n.snapshots)
     time_log['define_nodal_balance_constraints'] = time.time()
+
+    define_global_constraints(n, n.snapshots)
+    time_log['define_global_constraints'] = time.time()
 
     define_objective(n)
     time_log['define_objective'] = time.time()
@@ -438,7 +483,7 @@ def read_gurobi(n, solution_fn, keep_files):
     status = "ok"
     termination_condition = "optimal"
 
-    return status,termination_condition,variables_sol,constraints_dual
+    return status, termination_condition, variables_sol, constraints_dual
 
 
 def assign_solution(n, snapshots, variables_sol, constraints_dual,
@@ -467,11 +512,13 @@ def assign_solution(n, snapshots, variables_sol, constraints_dual,
         if name is None: name = attr
         if pnl:
             n.pnl(component)[attr] = (pnl_con(n, component, attr).stack()
-                                      .map(variables_sol).unstack())
+                                      .map(-constraints_dual).unstack())
         else:
-            n.df(component)[attr] = df_con(n, component, attr).map(variables_sol)
+            n.df(component)[attr] = (df_con(n, component, attr)
+                                     .map(-constraints_dual))
 
     map_dual('Bus', 'nodal_balance', 'marginal_price')
+    map_dual('GlobalConstraint', 'mu', pnl=False)
     for component in n.non_empty_components:
         map_dual(component, 'mu_upper')
         map_dual(component, 'mu_lower')
