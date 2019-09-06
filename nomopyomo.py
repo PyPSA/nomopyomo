@@ -65,12 +65,9 @@ def write_constraint(n, lhs, sense, rhs):
 # =============================================================================
 # helpers, helper functions
 # =============================================================================
-prefixes = pd.Series({'Generator': 'p',
-                      #'StorageUnit': 'p',
-                      #'Store': 'e',
-                      'Link': 'p',
-                      'Line': 's',
-                      'Transformer':'s'})
+lookup = pd.read_csv(os.path.dirname(__file__) + '/variables.csv',
+                        index_col=['component', 'variable'])
+prefix = lookup.droplevel(1).prefix[lambda ds: ~ds.index.duplicated()]
 
 var_ref_suffix = '_varref' # after solving replace with '_opt'
 con_ref_suffix = '_conref' # after solving replace with ''
@@ -102,124 +99,127 @@ def con_array(shape):
     return index, array
 
 # references to vars and cons, rewrite this part to not store every reference
-def _add_reference(n, df, component, attr, suffix, pnl=True):
+def _add_reference(n, df, c, attr, suffix, pnl=True):
     attr_name = attr + suffix
     if pnl:
-        if attr_name in n.pnl(component):
-            n.pnl(component)[attr_name][df.columns] = df
+        if attr_name in n.pnl(c):
+            n.pnl(c)[attr_name][df.columns] = df
         else:
-            n.pnl(component)[attr_name] = df
+            n.pnl(c)[attr_name] = df
     else:
-        n.df(component).loc[df.index, attr_name] = df
+        n.df(c).loc[df.index, attr_name] = df
 
-def set_varref(n, variables, component, attr, pnl=True):
-    _add_reference(n, variables, component, attr, var_ref_suffix, pnl=pnl)
+def set_varref(n, variables, c, attr, pnl=True):
+    _add_reference(n, variables, c, attr, var_ref_suffix, pnl=pnl)
 
-def set_conref(n, constraints, component, attr, pnl=True):
-    _add_reference(n, constraints, component, attr, con_ref_suffix, pnl=pnl)
+def set_conref(n, constraints, c, attr, pnl=True):
+    _add_reference(n, constraints, c, attr, con_ref_suffix, pnl=pnl)
 
-def pnl_var(n, component, attr):
-    return n.pnl(component)[attr + var_ref_suffix]
+def pnl_var(n, c, attr):
+    return n.pnl(c)[attr + var_ref_suffix]
 
-def df_var(n, component, attr):
-    return n.df(component)[attr + var_ref_suffix]
+def df_var(n, c, attr):
+    return n.df(c)[attr + var_ref_suffix]
 
-def pnl_con(n, component, attr):
-    return n.pnl(component)[attr + con_ref_suffix]
+def pnl_con(n, c, attr):
+    return n.pnl(c)[attr + con_ref_suffix]
 
-def df_con(n, component, attr):
-    return n.df(component)[attr + con_ref_suffix]
+def df_con(n, c, attr):
+    return n.df(c)[attr + con_ref_suffix]
 
 # 'getter' functions
-def get_extendable_i(n, component):
-    return n.df(component)[lambda ds:
-        ds[f'{prefixes[component]}_nom_extendable']].index
+def get_extendable_i(n, c):
+    return n.df(c)[lambda ds:
+        ds[f'{prefix[c]}_nom_extendable']].index
 
-def get_non_extendable_i(n, component):
-    return n.df(component)[lambda ds:
-            ~ds[f'{prefixes[component]}_nom_extendable']].index
+def get_non_extendable_i(n, c):
+    return n.df(c)[lambda ds:
+            ~ds[f'{prefix[c]}_nom_extendable']].index
 
-def get_bounds_pu(n, component, snapshots, index=None):
-    max_pu = get_as_dense(n, component,
-                          f'{prefixes[component]}_max_pu', snapshots)
-    if component in n.passive_branch_components:
+def get_bounds_pu(n, c, sns, index=None, attr=None):
+    max_pu = get_as_dense(n, c, f'{prefix[c]}_max_pu', sns)
+    if c in n.passive_branch_components:
         min_pu = - max_pu
+    elif c == 'StorageUnit':
+        min_pu = pd.DataFrame(0, max_pu.index, max_pu.columns)
+        if attr == 'p_store':
+            max_pu = - get_as_dense(n, c, f'{prefix[c]}_min_pu', sns)
     else:
-        min_pu = get_as_dense(n, component,
-                              f'{prefixes[component]}_min_pu', snapshots)
+        min_pu = get_as_dense(n, c, f'{prefix[c]}_min_pu', sns)
     return (min_pu, max_pu) if index is None else (min_pu[index], max_pu[index])
 
 # =============================================================================
 #  var and con defining functions
 # =============================================================================
 
-def define_nominal_for_extendable_variables(n, component, attr='p'):
-    ext_i = get_extendable_i(n, component)
+def define_nominal_for_extendable_variables(n, c):
+    ext_i = get_extendable_i(n, c)
     if ext_i.empty: return
-    lbound = n.df(component)[f'{attr}_nom_min'][ext_i]
-    ubound = n.df(component)[f'{attr}_nom_max'][ext_i]
+    lbound = n.df(c)[f'{prefix[c]}_nom_min'][ext_i]
+    ubound = n.df(c)[f'{prefix[c]}_nom_max'][ext_i]
     variables = write_bound(n, lbound, ubound)
-    set_varref(n, variables, component, f'{attr}_nom', pnl=False)
+    set_varref(n, variables, c, f'{prefix[c]}_nom', pnl=False)
 
 
-def define_dispatch_for_extendable_variables(n, snapshots, component, attr='p'):
-    ext_i = get_extendable_i(n, component)
+def define_dispatch_for_extendable_variables(n, sns, c, attr):
+    ext_i = get_extendable_i(n, c)
     if ext_i.empty: return
-    lbound = pd.DataFrame(-np.inf, index=snapshots, columns=ext_i)
-    ubound = pd.DataFrame(np.inf, index=snapshots, columns=ext_i)
+    lbound = pd.DataFrame(-np.inf, index=sns, columns=ext_i)
+    ubound = pd.DataFrame(np.inf, index=sns, columns=ext_i)
     variables = write_bound(n, lbound, ubound)
-    set_varref(n, variables, component, attr, pnl=True)
+    set_varref(n, variables, c, attr, pnl=True)
 
 
-def define_dispatch_for_non_extendable_variables(n, snapshots, component, attr='p'):
-    fix_i = get_non_extendable_i(n, component)
+def define_dispatch_for_non_extendable_variables(n, sns, c, attr):
+    fix_i = get_non_extendable_i(n, c)
     if fix_i.empty: return
-    nominal_fix = n.df(component)[f'{attr}_nom'][fix_i]
-    min_pu, max_pu = get_bounds_pu(n, component, snapshots, index=fix_i)
+    nominal_fix = n.df(c)[f'{attr}_nom'][fix_i]
+    min_pu, max_pu = get_bounds_pu(n, c, sns, fix_i, attr)
     lbound = min_pu.mul(nominal_fix)
     ubound = max_pu.mul(nominal_fix)
     variables = write_bound(n, lbound, ubound)
-    set_varref(n, variables, component, attr, pnl=True)
+    set_varref(n, variables, c, attr, pnl=True)
 
 
-def define_dispatch_for_extendable_constraints(n, snapshots, component, attr):
-    ext_i = get_extendable_i(n, component)
+def define_dispatch_for_extendable_constraints(n, sns, c, attr):
+    ext_i = get_extendable_i(n, c)
     if ext_i.empty: return
-    min_pu, max_pu = get_bounds_pu(n, component, snapshots, index=ext_i)
-    operational_ext_v = pnl_var(n, component, attr)[ext_i]
-    nominal_v = df_var(n, component, attr + '_nom')[ext_i]
+    min_pu, max_pu = get_bounds_pu(n, c, sns, ext_i, attr)
+    operational_ext_v = pnl_var(n, c, attr)[ext_i]
+    nominal_v = df_var(n, c, prefix[c] + '_nom')[ext_i]
     wo_prefactor = nominal_v + '\n' + '-1.0 ' +  operational_ext_v
     rhs = '0'
 
     lhs = numerical_to_string(max_pu) + wo_prefactor
     constraints = write_constraint(n, lhs, '>=', rhs)
-    set_conref(n, constraints, component, 'mu_upper')
+    set_conref(n, constraints, c, 'mu_upper')
 
     lhs = numerical_to_string(min_pu) + wo_prefactor
     constraints = write_constraint(n, lhs, '<=', rhs)
-    set_conref(n, constraints, component, 'mu_lower')
+    set_conref(n, constraints, c, 'mu_lower')
 
 
-def define_nodal_balance_constraints(n, snapshots):
+def define_nodal_balance_constraints(n, sns):
 
-    def bus_injection(component, attr, groupcol='bus', sign=1):
+    def bus_injection(c, attr, groupcol='bus', sign=1):
         #additional sign only necessary for branches in reverse direction
-        if 'sign' in n.df(component):
-            sign = sign * n.df(component).sign
-        return (numerical_to_string(sign) + pnl_var(n, component, attr))\
-                .rename(columns=n.df(component)[groupcol])
+        if 'sign' in n.df(c):
+            sign = sign * n.df(c).sign
+        return (numerical_to_string(sign) + pnl_var(n, c, attr))\
+                .rename(columns=n.df(c)[groupcol])
 
+    # one might reduce this a bit by using n.branches and lookup
     arg_list = [['Generator', 'p', 'bus', 1],
-#                ['Store', 'e', 'bus', 1],
-#                ['StorageUnite', 'p_dispatch', 'bus', 1],
-#                ['StorageUnit', 'p_charge', 'bus', -1],
+                ['Store', 'e', 'bus', 1],
+                ['StorageUnit', 'p_dispatch', 'bus', 1],
+                ['StorageUnit', 'p_store', 'bus', -1],
                 ['Line', 's', 'bus0', -1],
                 ['Line', 's', 'bus1', 1],
                 ['Transformer', 's', 'bus0', -1],
                 ['Transformer', 's', 'bus1', 1],
                 ['Link', 'p', 'bus0', -1],
                 ['Link', 'p', 'bus1', n.links.efficiency]]
-    arg_list = [arg for arg in arg_list if arg[0] in n.non_empty_components]
+    arg_list = [arg for arg in arg_list if not n.df(arg[0]).empty]
 
     lhs = (pd.concat([bus_injection(*args) for args in arg_list], axis=1)
            .groupby(axis=1, level=0)
@@ -264,7 +264,7 @@ def define_store_constraints(n):
 def define_storage_units_constraints(n):
     return
 
-def define_global_constraints(n, snapshots):
+def define_global_constraints(n, sns):
 
     def join_entries(df): return '\n'.join(df.values.flatten())
 
@@ -288,7 +288,7 @@ def define_global_constraints(n, snapshots):
             lhs += (sus.carrier.map(n.emissions).mul(-1)
                     .pipe(numerical_to_string)
                     .add(pnl_var(n, 'StorageUnit', 'state_of_charge')
-                        .loc[snapshots[-1], sus.index])
+                        .loc[sns[-1], sus.index])
                     .pipe(join_entries))
 
         n.stores['carrier'] = n.stores.bus.map(n.buses.carrier)
@@ -298,7 +298,7 @@ def define_global_constraints(n, snapshots):
                     .pipe(numerical_to_string).pipe(join_entries))
             lhs += (sus.stores.map(n.emissions).mul(-1)
                     .pipe(numerical_to_string)
-                    .add(pnl_var(n, 'Store', 'e').loc[snapshots[-1], stores.index])
+                    .add(pnl_var(n, 'Store', 'e').loc[sns[-1], stores.index])
                     .pipe(join_entries))
 
         glcs.loc[name, 'lhs'] = lhs
@@ -308,19 +308,18 @@ def define_global_constraints(n, snapshots):
 
 
 def define_objective(n):
-    operating = prefixes[n.non_empty_components - n.passive_branch_components]
-    for comp, attr in operating.items():
-        cost = (get_as_dense(n, comp, 'marginal_cost')
+    for c, attr in lookup.query('marginal_cost').index:
+        cost = (get_as_dense(n, c, 'marginal_cost')
                 .loc[:, lambda ds: (ds != 0).all()]
                 .mul(n.snapshot_weightings, axis=0))
         if cost.empty: continue
-        terms = numerical_to_string(cost) + pnl_var(n, comp, attr)[cost.columns]
+        terms = numerical_to_string(cost) + pnl_var(n, c, attr)[cost.columns]
         write_objective(n, terms)
     #investment
-    for comp, attr in prefixes[n.non_empty_components].items():
-        cost = n.df(comp)['capital_cost'][get_extendable_i(n, comp)]
+    for c, attr in prefix.items():
+        cost = n.df(c)['capital_cost'][get_extendable_i(n, c)]
         if cost.empty: continue
-        terms = numerical_to_string(cost) + df_var(n, comp, attr+'_nom')[cost.index]
+        terms = numerical_to_string(cost) + df_var(n, c, attr+'_nom')[cost.index]
         write_objective(n, terms)
 
 
@@ -328,33 +327,28 @@ def prepare_lopf(n, snapshots=None, keep_files=False,
                  extra_functionality=None):
     snapshots = n.snapshots if snapshots is None else snapshots
     time_log = pd.Series({'start': time.time()})
-    n.non_empty_components = set(c for c in prefixes.index if not n.df(c).empty)
+    n.storage_units = n.storage_units.eval('p_store_nom = p_nom')\
+                                     .eval('p_dispatch_nom = p_nom')
 
+    n.identifier = ''.join(random.choice(string.ascii_lowercase)
+                        for i in range(8))
     n.objective_fn = "/tmp/objective-{}.txt".format(n.identifier)
     n.constraints_fn = "/tmp/constraints-{}.txt".format(n.identifier)
     n.bounds_fn = "/tmp/bounds-{}.txt".format(n.identifier)
+    n.problem_fn = "/tmp/test-{}.lp".format(n.identifier)
 
     print('\* LOPF *\n\nmin\nobj:\n', file=open(n.objective_fn, 'w'))
     print("\n\ns.t.\n\n", file=open(n.constraints_fn, "w"))
     print("\nbounds\n", file=open(n.bounds_fn, "w"))
 
-    for c, attr in prefixes[n.non_empty_components].items():
-        define_nominal_for_extendable_variables(n, c, attr)
-    time_log['define_nominal_for_extendable_variables'] = time.time()
 
+    for c, attr in lookup.index:
+        define_nominal_for_extendable_variables(n, c)
+        define_dispatch_for_non_extendable_variables(n, snapshots, c, attr)
+        define_dispatch_for_extendable_variables(n, snapshots, c, attr)
+        define_dispatch_for_extendable_constraints(n, snapshots, c, attr)
 
-    for c, attr in prefixes[n.non_empty_components].items():
-        define_dispatch_for_extendable_variables(n, n.snapshots, c, attr)
-    time_log['define_dispatch_for_extendable_variables'] = time.time()
-
-    for c, attr in prefixes[n.non_empty_components].items():
-        define_dispatch_for_non_extendable_variables(n, n.snapshots, c, attr)
-    time_log['define_dispatch_for_non_extendable_variables'] = time.time()
-
-    for c, attr in prefixes[n.non_empty_components].items():
-        define_dispatch_for_extendable_constraints(n, n.snapshots, c, attr)
-    time_log['define_dispatch_for_extendable_constraints'] = time.time()
-
+    time_log['define nominal and dispatch variables'] = time.time()
 
     define_kirchhoff_constraints(n)
     time_log['define_kirchhoff_constraints'] = time.time()
@@ -486,42 +480,43 @@ def read_gurobi(n, solution_fn, keep_files):
     return status, termination_condition, variables_sol, constraints_dual
 
 
-def assign_solution(n, snapshots, variables_sol, constraints_dual,
+def assign_solution(n, sns, variables_sol, constraints_dual,
                     extra_postprocessing):
+    non_empty_components = [c for c in prefix.index if not n.df(c).empty]
     #solutions
-    def map_solution(component, attr, pnl=True):
+    def map_solution(c, attr, pnl=True):
         if pnl:
-            values = (pnl_var(n, component, attr).stack()
+            values = (pnl_var(n, c, attr).stack()
                       .map(variables_sol).unstack())
-            if component in n.passive_branch_components ^ {'Link'}:
-                n.pnl(component)['p0'] = values
-                n.pnl(component)['p1'] = -values
+            if c in n.passive_branch_components ^ {'Link'}:
+                n.pnl(c)['p0'] = values
+                n.pnl(c)['p1'] = -values
             else:
-                n.pnl(component)[attr] = values
+                n.pnl(c)[attr] = values
         else:
-            n.df(component)[attr+'_opt'] = (df_var(n, component, attr)
+            n.df(c)[attr+'_opt'] = (df_var(n, c, attr)
                                             .map(variables_sol))
 
-    for component, attr in prefixes[n.non_empty_components].items():
-        map_solution(component, attr, pnl=True)
-    for component, attr in (prefixes[n.non_empty_components] + '_nom').items():
-        map_solution(component, attr, pnl=False)
+    for c, attr in prefix[non_empty_components].items():
+        map_solution(c, attr  + '_nom', pnl=False)
+    for c, attr in lookup.loc[non_empty_components].index:
+        map_solution(c, attr, pnl=True)
 
     #duals
-    def map_dual(component, attr, name=None, pnl=True):
+    def map_dual(c, attr, name=None, pnl=True):
         if name is None: name = attr
         if pnl:
-            n.pnl(component)[attr] = (pnl_con(n, component, attr).stack()
+            n.pnl(c)[attr] = (pnl_con(n, c, attr).stack()
                                       .map(-constraints_dual).unstack())
         else:
-            n.df(component)[attr] = (df_con(n, component, attr)
+            n.df(c)[attr] = (df_con(n, c, attr)
                                      .map(-constraints_dual))
 
     map_dual('Bus', 'nodal_balance', 'marginal_price')
     map_dual('GlobalConstraint', 'mu', pnl=False)
-    for component in n.non_empty_components:
-        map_dual(component, 'mu_upper')
-        map_dual(component, 'mu_lower')
+    for c in non_empty_components:
+        map_dual(c, 'mu_upper')
+        map_dual(c, 'mu_lower')
 
     return
 
@@ -582,16 +577,13 @@ def lopf(n, snapshots=None, solver_name="cbc",
 
     snapshots = _as_snapshots(n, snapshots)
 
-    n.identifier = ''.join(random.choice(string.ascii_lowercase)
-                        for i in range(8))
-    n.problem_fn = "/tmp/test-{}.lp".format(n.identifier)
-    solution_fn = "/tmp/test-{}.sol".format(n.identifier)
     if solver_logfile is None:
         solver_logfile = "test.log"
 
     logger.info("Prepare linear problem")
     prepare_lopf(n, snapshots, keep_files, extra_functionality)
     gc.collect()
+    solution_fn = "/tmp/test-{}.sol".format(n.identifier)
 
     logger.info("Prepare linear problem")
 

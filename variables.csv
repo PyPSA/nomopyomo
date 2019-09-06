@@ -1,0 +1,8 @@
+component,variable,prefix,marginal_cost
+Generator,p,p,True
+Line,s,s,False
+Link,p,p,True
+Transformer,s,s,False
+Store,e,e,True
+StorageUnit,p_dispatch,p,True
+StorageUnit,p_store,p,False
