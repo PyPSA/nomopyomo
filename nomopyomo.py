@@ -342,8 +342,9 @@ def prepare_lopf(n, snapshots=None, keep_files=False,
     print("\nbounds\n", file=open(n.bounds_fn, "w"))
 
 
-    for c, attr in lookup.index:
+    for c, attr in lookup.query('nominal').index:
         define_nominal_for_extendable_variables(n, c)
+    for c, attr in lookup.query('not nominal').index:
         define_dispatch_for_non_extendable_variables(n, snapshots, c, attr)
         define_dispatch_for_extendable_variables(n, snapshots, c, attr)
         define_dispatch_for_extendable_constraints(n, snapshots, c, attr)
