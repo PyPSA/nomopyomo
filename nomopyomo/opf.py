@@ -32,11 +32,6 @@ import gc, string, random, time, pyomo, os
 import logging
 logger = logging.getLogger(__name__)
 
-
-# =============================================================================
-#  var and con defining functions
-# =============================================================================
-
 def define_nominal_for_extendable_variables(n, c):
     ext_i = get_extendable_i(n, c)
     if ext_i.empty: return
@@ -49,9 +44,7 @@ def define_nominal_for_extendable_variables(n, c):
 def define_dispatch_for_extendable_variables(n, sns, c, attr):
     ext_i = get_extendable_i(n, c)
     if ext_i.empty: return
-    lbound = pd.DataFrame(-np.inf, index=sns, columns=ext_i)
-    ubound = pd.DataFrame(np.inf, index=sns, columns=ext_i)
-    variables = write_bound(n, lbound, ubound)
+    variables = write_bound(n, -np.inf, np.inf, axes=[sns, ext_i])
     set_varref(n, variables, c, attr, pnl=True)
 
 
@@ -230,7 +223,6 @@ def prepare_lopf(n, snapshots=None, keep_files=False,
     for c, attr in lookup.query('nominal').index:
         define_nominal_for_extendable_variables(n, c)
     for c, attr in lookup.query('not nominal').index:
-        print(c)
         define_dispatch_for_non_extendable_variables(n, snapshots, c, attr)
         define_dispatch_for_extendable_variables(n, snapshots, c, attr)
         define_dispatch_for_extendable_constraints(n, snapshots, c, attr)
@@ -381,8 +373,7 @@ def assign_solution(n, sns, variables_sol, constraints_dual,
             else:
                 n.pnl(c)[attr] = values
         else:
-            n.df(c)[attr+'_opt'] = (df_var(n, c, attr)
-                                            .map(variables_sol))
+            n.df(c)[attr+'_opt'] = df_var(n, c, attr).map(variables_sol)
 
     for c, attr in lookup.query('nominal').loc[non_empty_components].index:
         map_solution(c, attr, pnl=False)
@@ -396,8 +387,7 @@ def assign_solution(n, sns, variables_sol, constraints_dual,
             n.pnl(c)[attr] = (pnl_con(n, c, attr).stack()
                                       .map(-constraints_dual).unstack())
         else:
-            n.df(c)[attr] = (df_con(n, c, attr)
-                                     .map(-constraints_dual))
+            n.df(c)[attr] = df_con(n, c, attr).map(-constraints_dual)
 
     map_dual('Bus', 'nodal_balance', 'marginal_price')
     map_dual('GlobalConstraint', 'mu', pnl=False)
@@ -405,7 +395,6 @@ def assign_solution(n, sns, variables_sol, constraints_dual,
         map_dual(c, 'mu_upper')
         map_dual(c, 'mu_lower')
 
-    return
 
 def lopf(n, snapshots=None, solver_name="cbc",
          solver_logfile=None, skip_pre=False,
@@ -493,5 +482,3 @@ def lopf(n, snapshots=None, solver_name="cbc",
     gc.collect()
 
     return status,termination_condition
-
-

@@ -22,20 +22,25 @@ def write_objective(n, df):
     df.to_csv(n.objective_fn, sep='\n', index=False, header=False, mode='a')
 
 xCounter = 0
-def write_bound(n, lower, upper):
-    shape = max([lower.shape, upper.shape])
-    axes = lower.axes if shape == lower.shape else upper.axes
+def write_bound(n, lower, upper, axes=None):
+    if (isinstance(lower, (pd.Series, pd.DataFrame)) &
+        isinstance(upper, (pd.Series, pd.DataFrame))):
+        shape = max([lower.shape, upper.shape])
+        axes = lower.axes if shape == lower.shape else upper.axes
+        lower = lower.astype(str)
+        upper = upper.astype(str)
+    elif isinstance(lower, (float, int)) & isinstance(upper, (float, int)):
+        lower, upper = str(lower), str(upper)
+        shape = tuple(map(len, axes))
+    ser_or_frame = pd.DataFrame if len(shape) > 1 else pd.Series
     length = np.prod(shape)
     global xCounter
     xCounter += length
     variables = ('x' + np.array([str(x) for x in
                 range(xCounter - length, xCounter)], dtype=object).reshape(shape))
-    lower.astype(str).add(' <= ').add(variables).add(' <= ').add(upper.astype(str))\
-         .to_csv(n.bounds_fn, sep='\n', index=False, header=False, mode='a')
-    if len(shape) > 1:
-        return pd.DataFrame(variables, *axes)
-    else:
-        return pd.Series(variables, *axes)
+    ser_or_frame(lower + ' <= ' + variables + ' <= ' + upper)\
+        .to_csv(n.bounds_fn, sep='\n', index=False, header=False, mode='a')
+    return ser_or_frame(variables, *axes)
 
 cCounter = 0
 def write_constraint(n, lhs, sense, rhs):
