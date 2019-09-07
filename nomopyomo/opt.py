@@ -21,23 +21,32 @@ prefix = lookup.droplevel(1).prefix[lambda ds: ~ds.index.duplicated()]
 def write_objective(n, df):
     df.to_csv(n.objective_fn, sep='\n', index=False, header=False, mode='a')
 
-
+xCounter = 0
 def write_bound(n, lower, upper):
     shape = max([lower.shape, upper.shape])
     axes = lower.axes if shape == lower.shape else upper.axes
-    var_index, variables = var_array(shape)
-    (lower.astype(str) + ' <= ' + variables + ' <= ' + upper.astype(str))\
-        .to_csv(n.bounds_fn, sep='\n', index=False, header=False, mode='a')
+    length = np.prod(shape)
+    global xCounter
+    xCounter += length
+    variables = ('x' + np.array([str(x) for x in
+                range(xCounter - length, xCounter)], dtype=object).reshape(shape))
+    lower.astype(str).add(' <= ').add(variables).add(' <= ').add(upper.astype(str))\
+         .to_csv(n.bounds_fn, sep='\n', index=False, header=False, mode='a')
     if len(shape) > 1:
         return pd.DataFrame(variables, *axes)
     else:
         return pd.Series(variables, *axes)
 
+cCounter = 0
 def write_constraint(n, lhs, sense, rhs):
     shape = max([df.shape for df in [lhs, rhs]
                 if isinstance(df, (pd.Series, pd.DataFrame))])
     axes = lhs.axes if shape == lhs.shape else rhs.axes
-    con_index, constraints = con_array(shape)
+    length = np.prod(shape)
+    global cCounter
+    cCounter += length
+    constraints = ('c' + np.array([str(x) for x in
+                range(cCounter - length, cCounter)], dtype=object).reshape(shape))
     char = '\n'
     (constraints + ':' + char + lhs + char + sense + char + rhs + char)\
         .to_csv(n.constraints_fn, sep='\n', index=False, header=False,
@@ -62,24 +71,6 @@ def numerical_to_string(val, append_space=True):
         s = val.pipe(np.sign).replace([0, 1, -1], ['+', '+', '-'])\
                   .add(abs(val).astype(str)).astype(str)
     return s + ' ' if append_space else s
-
-x_counter = 0
-def var_array(shape):
-    length = np.prod(shape)
-    global x_counter
-    index = pd.RangeIndex(x_counter, x_counter + length)
-    x_counter += length
-    array = 'x' + index.astype(str).values.reshape(shape)
-    return index, array
-
-c_counter = 0
-def con_array(shape):
-    length = np.prod(shape)
-    global c_counter
-    index = pd.RangeIndex(c_counter, c_counter + length)
-    c_counter += length
-    array = 'c' + index.astype(str).values.reshape(shape)
-    return index, array
 
 # references to vars and cons, rewrite this part to not store every reference
 def _add_reference(n, df, c, attr, suffix, pnl=True):

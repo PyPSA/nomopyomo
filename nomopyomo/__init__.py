@@ -6,4 +6,4 @@ Created on Sat Sep  7 17:51:14 2019
 @author: fabian
 """
 
-from . import nomopyomo
+from .opf import lopf, prepare_lopf

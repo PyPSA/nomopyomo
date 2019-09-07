@@ -204,7 +204,7 @@ def define_objective(n):
     for c, attr in prefix.items():
         cost = n.df(c)['capital_cost'][get_extendable_i(n, c)]
         if cost.empty: continue
-        terms = numerical_to_string(cost) + df_var(n, c, attr+'_nom')[cost.index]
+        terms = numerical_to_string(cost) + df_var(n, c, attr +'_nom')[cost.index]
         write_objective(n, terms)
 
 
@@ -230,6 +230,7 @@ def prepare_lopf(n, snapshots=None, keep_files=False,
     for c, attr in lookup.query('nominal').index:
         define_nominal_for_extendable_variables(n, c)
     for c, attr in lookup.query('not nominal').index:
+        print(c)
         define_dispatch_for_non_extendable_variables(n, snapshots, c, attr)
         define_dispatch_for_extendable_variables(n, snapshots, c, attr)
         define_dispatch_for_extendable_constraints(n, snapshots, c, attr)
@@ -383,9 +384,9 @@ def assign_solution(n, sns, variables_sol, constraints_dual,
             n.df(c)[attr+'_opt'] = (df_var(n, c, attr)
                                             .map(variables_sol))
 
-    for c, attr in prefix[non_empty_components].items():
-        map_solution(c, attr  + '_nom', pnl=False)
-    for c, attr in lookup.loc[non_empty_components].index:
+    for c, attr in lookup.query('nominal').loc[non_empty_components].index:
+        map_solution(c, attr, pnl=False)
+    for c, attr in lookup.query('not nominal').loc[non_empty_components].index:
         map_solution(c, attr, pnl=True)
 
     #duals
