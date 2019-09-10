@@ -19,7 +19,8 @@ Pyomo. nomopyomo = no more Pyomo."""
 from .opt import (get_as_dense, get_bounds_pu, get_extendable_i,
                   get_non_extendable_i, write_bound, write_constraint,
                   write_objective, numerical_to_string, set_conref, set_varref,
-                  df_var, df_con, pnl_var, pnl_con, lookup, prefix)
+                  df_var, df_con, pnl_var, pnl_con, lookup, prefix,
+                  var_ref_suffix, stringadd, xCounter, cCounter)
 
 from pypsa.pf import find_cycles as find_cycles, _as_snapshots
 
@@ -51,7 +52,7 @@ def define_dispatch_for_extendable_variables(n, sns, c, attr):
 def define_dispatch_for_non_extendable_variables(n, sns, c, attr):
     fix_i = get_non_extendable_i(n, c)
     if fix_i.empty: return
-    nominal_fix = n.df(c)[f'{attr}_nom'][fix_i]
+    nominal_fix = n.df(c)[f'{prefix[c]}_nom'][fix_i]
     min_pu, max_pu = get_bounds_pu(n, c, sns, fix_i, attr)
     lbound = min_pu.mul(nominal_fix)
     ubound = max_pu.mul(nominal_fix)
@@ -64,16 +65,17 @@ def define_dispatch_for_extendable_constraints(n, sns, c, attr):
     if ext_i.empty: return
     min_pu, max_pu = get_bounds_pu(n, c, sns, ext_i, attr)
     operational_ext_v = pnl_var(n, c, attr)[ext_i]
-    nominal_v = df_var(n, c, prefix[c] + '_nom')[ext_i]
-    wo_prefactor = nominal_v + '\n' + '-1.0 ' +  operational_ext_v
+    nominal_v = df_var(n, c, f'{prefix[c]}_nom')[ext_i]
+    wo_prefactor, axes = stringadd(nominal_v, '\n-1.0 ', operational_ext_v,
+                                   return_axes=True)
     rhs = '0'
 
-    lhs = numerical_to_string(max_pu) + wo_prefactor
-    constraints = write_constraint(n, lhs, '>=', rhs)
+    lhs, axes = stringadd(max_pu, wo_prefactor, return_axes=True)
+    constraints = write_constraint(n, lhs, '>=', rhs, axes)
     set_conref(n, constraints, c, 'mu_upper')
 
-    lhs = numerical_to_string(min_pu) + wo_prefactor
-    constraints = write_constraint(n, lhs, '<=', rhs)
+    lhs, axes = stringadd(min_pu, wo_prefactor, return_axes=True)
+    constraints = write_constraint(n, lhs, '<=', rhs, axes)
     set_conref(n, constraints, c, 'mu_lower')
 
 
@@ -83,8 +85,8 @@ def define_nodal_balance_constraints(n, sns):
         #additional sign only necessary for branches in reverse direction
         if 'sign' in n.df(c):
             sign = sign * n.df(c).sign
-        return (numerical_to_string(sign) + pnl_var(n, c, attr))\
-                .rename(columns=n.df(c)[groupcol])
+        vals, axes = stringadd(sign, pnl_var(n, c, attr), return_axes=True)
+        return pd.DataFrame(vals, *axes).rename(columns=n.df(c)[groupcol])
 
     # one might reduce this a bit by using n.branches and lookup
     arg_list = [['Generator', 'p', 'bus', 1],
@@ -101,7 +103,8 @@ def define_nodal_balance_constraints(n, sns):
 
     lhs = (pd.concat([bus_injection(*args) for args in arg_list], axis=1)
            .groupby(axis=1, level=0)
-           .agg(lambda x: '\n'.join(x.values)))
+           .agg(lambda x: '\n'.join(x.values))
+           .reindex(columns=n.buses.index))
     sense = '='
     rhs = ((- n.loads_t.p_set * n.loads.sign)
            .groupby(n.loads.bus, axis=1).sum()
@@ -119,8 +122,8 @@ def define_kirchhoff_constraints(n):
 
     def cycle_flow(ds):
         ds = ds[lambda ds: ds!=0.].dropna()
-        return (numerical_to_string(ds) +
-                n.lines_t.s_varref[ds.index] + '\n').sum(1)
+        vals = stringadd(ds, n.lines_t[f's{var_ref_suffix}'][ds.index], '\n')
+        return vals.sum(1)
 
     constraints = []
     for sub in n.sub_networks.obj:
@@ -144,7 +147,10 @@ def define_storage_units_constraints(n):
 
 def define_global_constraints(n, sns):
 
-    def join_entries(df): return '\n'.join(df.values.flatten())
+    def join_entries(df):
+        if isinstance(df, np.ndarray):
+            return '\n'.join(df.flatten())
+        return '\n'.join(df.values.flatten())
 
     glcs = n.global_constraints.query('type == "primary_energy"')
     for name, glc in glcs.iterrows():
@@ -154,30 +160,26 @@ def define_global_constraints(n, sns):
         gens = n.generators.query('carrier in @emissions.index')
         em_pu = gens.carrier.map(emissions)/gens.efficiency
         em_pu = n.snapshot_weightings.to_frame() @ em_pu.to_frame('weightings').T
-        lhs = em_pu.pipe(numerical_to_string) \
-                   .add(pnl_var(n, 'Generator', 'p')[gens.index]) \
-                   .pipe(join_entries)
+        vals = stringadd(em_pu, pnl_var(n, 'Generator', 'p')[gens.index])
+        lhs = join_entries(vals)
 
         sus = n.storage_units.query('carrier in @emissions.index and '
                                     'not cyclic_state_of_charge')
         if not sus.empty:
             lhs += (sus.carrier.map(emissions).mul(sus.state_of_charge_initial)
                     .pipe(numerical_to_string).pipe(join_entries))
-            lhs += (sus.carrier.map(n.emissions).mul(-1)
-                    .pipe(numerical_to_string)
-                    .add(pnl_var(n, 'StorageUnit', 'state_of_charge')
-                        .loc[sns[-1], sus.index])
-                    .pipe(join_entries))
-
+            vals = stringadd(-sus.carrier.map(n.emissions),
+                             pnl_var(n, 'StorageUnit', 'state_of_charge')
+                                 .loc[sns[-1], sus.index])
+            lhs += join_entries(vals)
         n.stores['carrier'] = n.stores.bus.map(n.buses.carrier)
         stores = n.stores.query('carrier in @emissions.index and not e_cyclic')
         if not stores.empty:
             lhs += (stores.carrier.map(emissions).mul(stores.e_initial)
                     .pipe(numerical_to_string).pipe(join_entries))
-            lhs += (sus.stores.map(n.emissions).mul(-1)
-                    .pipe(numerical_to_string)
-                    .add(pnl_var(n, 'Store', 'e').loc[sns[-1], stores.index])
-                    .pipe(join_entries))
+            vals = stringadd(-sus.stores.map(n.emissions),
+                        pnl_var(n, 'Store', 'e').loc[sns[-1], stores.index])
+            lhs += join_entries(vals)
 
         glcs.loc[name, 'lhs'] = lhs
     constraints = write_constraint(n, glcs.lhs, glcs.sense.replace('==', '='),
@@ -191,70 +193,88 @@ def define_objective(n):
                 .loc[:, lambda ds: (ds != 0).all()]
                 .mul(n.snapshot_weightings, axis=0))
         if cost.empty: continue
-        terms = numerical_to_string(cost) + pnl_var(n, c, attr)[cost.columns]
-        write_objective(n, terms)
+        terms = stringadd(cost, pnl_var(n, c, attr)[cost.columns], '\n')
+        for t in terms.flatten():
+            n.objective_f.write(t)
     #investment
     for c, attr in prefix.items():
         cost = n.df(c)['capital_cost'][get_extendable_i(n, c)]
         if cost.empty: continue
-        terms = numerical_to_string(cost) + df_var(n, c, attr +'_nom')[cost.index]
-        write_objective(n, terms)
+        terms = stringadd(cost, df_var(n, c, attr +'_nom')[cost.index], '\n')
+        for t in terms.flatten():
+            n.objective_f.write(t)
+
+
+def time_info(message):
+    global start
+
 
 
 def prepare_lopf(n, snapshots=None, keep_files=False,
                  extra_functionality=None):
+    #align index
+    global xCounter, cCounter
+    xCounter, cCounter = 0, 0
+
     snapshots = n.snapshots if snapshots is None else snapshots
-    time_log = pd.Series({'start': time.time()})
-    n.storage_units = n.storage_units.eval('p_store_nom = p_nom')\
-                                     .eval('p_dispatch_nom = p_nom')
+    start = time.time()
+    def time_info(message):
+        print(message, '\t', time.time()-start)
 
     n.identifier = ''.join(random.choice(string.ascii_lowercase)
                         for i in range(8))
-    n.objective_fn = "/tmp/objective-{}.txt".format(n.identifier)
-    n.constraints_fn = "/tmp/constraints-{}.txt".format(n.identifier)
-    n.bounds_fn = "/tmp/bounds-{}.txt".format(n.identifier)
-    n.problem_fn = "/tmp/test-{}.lp".format(n.identifier)
+    n.objective_fn = f"/tmp/objective-{n.identifier}.txt"
+    n.constraints_fn = f"/tmp/constraints-{n.identifier}.txt"
+    n.bounds_fn = f"/tmp/bounds-{n.identifier}.txt"
+    n.problem_fn = f"/tmp/test-{n.identifier}.lp"
 
-    print('\* LOPF *\n\nmin\nobj:\n', file=open(n.objective_fn, 'w'))
-    print("\n\ns.t.\n\n", file=open(n.constraints_fn, "w"))
-    print("\nbounds\n", file=open(n.bounds_fn, "w"))
+    n.objective_f = open(n.objective_fn, mode='w')
+    n.constraints_f = open(n.constraints_fn, mode='w')
+    n.bounds_f = open(n.bounds_fn, mode='w')
+
+    n.objective_f.write('\* LOPF *\n\nmin\nobj:\n')
+    n.constraints_f.write("\n\ns.t.\n\n")
+    n.bounds_f.write("\nbounds\n")
 
 
     for c, attr in lookup.query('nominal').index:
+        time_info(f'{c} {attr}')
         define_nominal_for_extendable_variables(n, c)
     for c, attr in lookup.query('not nominal').index:
+        time_info(f'{c} {attr}')
         define_dispatch_for_non_extendable_variables(n, snapshots, c, attr)
         define_dispatch_for_extendable_variables(n, snapshots, c, attr)
         define_dispatch_for_extendable_constraints(n, snapshots, c, attr)
 
-    time_log['define nominal and dispatch variables'] = time.time()
 
     define_kirchhoff_constraints(n)
-    time_log['define_kirchhoff_constraints'] = time.time()
+    time_info(f'define_kirchhoff_constraints')
 
     define_nodal_balance_constraints(n, n.snapshots)
-    time_log['define_nodal_balance_constraints'] = time.time()
+    time_info(f'define_nodal_balance_constraints')
+
 
     define_global_constraints(n, n.snapshots)
-    time_log['define_global_constraints'] = time.time()
+    time_info(f'define_global_constraints')
 
     define_objective(n)
-    time_log['define_objective'] = time.time()
+    time_info('define_objective')
+    n.objective_f.close()
 
-    print("end\n", file=open(n.bounds_fn, "a"))
+    n.constraints_f.close()
+
+    n.bounds_f.write("end\n")
+    n.bounds_f.close()
 
     os.system(f"cat {n.objective_fn} {n.constraints_fn} {n.bounds_fn} "
               f"> {n.problem_fn}")
 
-    time_log['writing out lp file'] = time.time()
-    time_log = time_log.diff()
-    time_log.drop('start', inplace=True)
-    time_log['total prepartion time'] = time_log.sum()
-    logger.info(f'\n{time_log}')
+    time_info('total preparation time')
 
     if not keep_files:
         for fn in [n.objective_fn, n.constraints_fn, n.bounds_fn]:
             os.system("rm "+ fn)
+
 
 
 # =============================================================================
