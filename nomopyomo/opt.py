@@ -21,6 +21,12 @@ nominals = lookup.query('nominal')
 # =============================================================================
 
 xCounter = 0
+cCounter = 0
+def reset_counter():
+    global xCounter, cCounter
+    xCounter, cCounter = 0, 0
+
+
 def write_bound(n, lower, upper, axes=None):
     """
     Writer function for writing out mutliple variables to the corresponding
@@ -40,11 +46,10 @@ def write_bound(n, lower, upper, axes=None):
     variables = np.array([f'x{x}' for x in range(xCounter - length, xCounter)],
                           dtype=object).reshape(shape)
 
-    for s in stringadd(lower, ' <= ', variables, ' <= ', upper, '\n').flatten():
+    for s in sumstr(lower, ' <= ', variables, ' <= ', upper, '\n').flatten():
         n.bounds_f.write(s)
     return ser_or_frame(variables, *axes)
 
-cCounter = 0
 def write_constraint(n, lhs, sense, rhs, axes=None):
     """
     Writer function for writing out mutliple constraints to the corresponding
@@ -62,7 +67,9 @@ def write_constraint(n, lhs, sense, rhs, axes=None):
     cCounter += length
     cons = np.array([f'c{x}' for x in range(cCounter - length, cCounter)],
                             dtype=object).reshape(shape)
-    for c in stringadd(cons, ':\n', lhs, '\n', sense, '\n', rhs, '\n\n').flatten():
+    if isinstance(sense, str):
+        sense = '=' if sense == '==' else sense
+    for c in sumstr(cons, ':\n', lhs, '\n', sense, '\n', rhs, '\n\n').flatten():
         n.constraints_f.write(c)
     return ser_or_frame(cons, *axes)
 
@@ -88,17 +95,21 @@ def broadcasted_axes(*dfs):
     for df in dfs:
         if isinstance(df, (pd.Series, pd.DataFrame)):
             if len(axes):
-                assert (axes[-1] == df.axes[-1]).all()
+                assert (axes[-1] == df.axes[-1]).all(), ('Series or DataFrames '
+                       'are not aligned')
             axes = df.axes if len(df.axes) > len(axes) else axes
             shape = tuple(map(len, axes))
     return axes, shape
 
 
-def stringadd(*vals, return_axes=False):
+def sumstr(*vals, return_axes=False):
     """
     Fast way to join arrays, series, frames of strings together. Returns
     a np.ndarray of strings. If return_axes is set to True and a pd.Series or
-    pd.DataFrame was past the corresponding axes is past.
+    pd.DataFrame was past the corresponding axes is past. For turning is into a
+    series or frame use pd.Series(*strinadd(..., return_axes=True)) or
+    pd.DataFrame(*sumstr(..., return_axes=True)) respectively.
+
     """
     axes, shape = broadcasted_axes(*vals)
     vals = [val.values if isinstance(val, (pd.Series, pd.DataFrame)) else val
@@ -106,7 +117,7 @@ def stringadd(*vals, return_axes=False):
     vals = [numerical_to_string(val) for val in vals]
     start = np.repeat('', np.prod(shape)).reshape(shape).astype(object)
     if return_axes:
-        return sum(vals, start), axes
+        return (sum(vals, start), *axes)
     else:
         return sum(vals, start)
 
@@ -139,6 +150,8 @@ def charappend(df, char):
     """
     Fast way to append a char or string to a large pd.DataFrame.
     """
+    if not df.size:
+        return df
     if isinstance(df, np.ndarray):
         return df + char
     d = df.copy()
@@ -149,12 +162,16 @@ def charprepend(df, char):
     """
     Fast way to prepend a char or string to a large pd.DataFrame.
     """
+    if not df.size:
+        return df
     if isinstance(df, np.ndarray):
         return df + char
     d = df.copy()
     d[:] = char + d.values
     return d
 
+def expand_series(ser, columns):
+    return ser.to_frame(columns[0]).reindex(columns=columns, method='ffill')
 
 # =============================================================================
 #  'getter' functions

@@ -18,9 +18,9 @@ Pyomo. nomopyomo = no more Pyomo."""
 
 from .opt import (get_as_dense, get_bounds_pu, get_extendable_i,
                   get_non_extendable_i, write_bound, write_constraint,
-                  write_objective, numerical_to_string, set_conref, set_varref,
+                  numerical_to_string, set_conref, set_varref,
                   df_var, df_con, pnl_var, pnl_con, lookup, prefix,
-                  var_ref_suffix, stringadd, xCounter, cCounter)
+                  var_ref_suffix, sumstr, reset_counter, expand_series)
 
 from pypsa.pf import find_cycles as find_cycles, _as_snapshots
 
@@ -36,9 +36,9 @@ logger = logging.getLogger(__name__)
 def define_nominal_for_extendable_variables(n, c):
     ext_i = get_extendable_i(n, c)
     if ext_i.empty: return
-    lbound = n.df(c)[f'{prefix[c]}_nom_min'][ext_i]
-    ubound = n.df(c)[f'{prefix[c]}_nom_max'][ext_i]
-    variables = write_bound(n, lbound, ubound)
+    lower = n.df(c)[f'{prefix[c]}_nom_min'][ext_i]
+    upper = n.df(c)[f'{prefix[c]}_nom_max'][ext_i]
+    variables = write_bound(n, lower, upper)
     set_varref(n, variables, c, f'{prefix[c]}_nom', pnl=False)
 
 
@@ -54,9 +54,9 @@ def define_dispatch_for_non_extendable_variables(n, sns, c, attr):
     if fix_i.empty: return
     nominal_fix = n.df(c)[f'{prefix[c]}_nom'][fix_i]
     min_pu, max_pu = get_bounds_pu(n, c, sns, fix_i, attr)
-    lbound = min_pu.mul(nominal_fix)
-    ubound = max_pu.mul(nominal_fix)
-    variables = write_bound(n, lbound, ubound)
+    lower = min_pu.mul(nominal_fix)
+    upper = max_pu.mul(nominal_fix)
+    variables = write_bound(n, lower, upper)
     set_varref(n, variables, c, attr, pnl=True)
 
 
@@ -66,15 +66,15 @@ def define_dispatch_for_extendable_constraints(n, sns, c, attr):
     min_pu, max_pu = get_bounds_pu(n, c, sns, ext_i, attr)
     operational_ext_v = pnl_var(n, c, attr)[ext_i]
     nominal_v = df_var(n, c, f'{prefix[c]}_nom')[ext_i]
-    wo_prefactor, axes = stringadd(nominal_v, '\n-1.0 ', operational_ext_v,
+    wo_prefactor, *axes = sumstr(nominal_v, '\n-1.0 ', operational_ext_v,
                                    return_axes=True)
     rhs = '0'
 
-    lhs, axes = stringadd(max_pu, wo_prefactor, return_axes=True)
+    lhs, *axes = sumstr(max_pu, wo_prefactor, return_axes=True)
     constraints = write_constraint(n, lhs, '>=', rhs, axes)
     set_conref(n, constraints, c, 'mu_upper')
 
-    lhs, axes = stringadd(min_pu, wo_prefactor, return_axes=True)
+    lhs, *axes = sumstr(min_pu, wo_prefactor, return_axes=True)
     constraints = write_constraint(n, lhs, '<=', rhs, axes)
     set_conref(n, constraints, c, 'mu_lower')
 
@@ -85,8 +85,8 @@ def define_nodal_balance_constraints(n, sns):
         #additional sign only necessary for branches in reverse direction
         if 'sign' in n.df(c):
             sign = sign * n.df(c).sign
-        vals, axes = stringadd(sign, pnl_var(n, c, attr), return_axes=True)
-        return pd.DataFrame(vals, *axes).rename(columns=n.df(c)[groupcol])
+        vals = sumstr(sign, pnl_var(n, c, attr), return_axes=True)
+        return pd.DataFrame(*vals).rename(columns=n.df(c)[groupcol])
 
     # one might reduce this a bit by using n.branches and lookup
     arg_list = [['Generator', 'p', 'bus', 1],
@@ -122,7 +122,7 @@ def define_kirchhoff_constraints(n):
 
     def cycle_flow(ds):
         ds = ds[lambda ds: ds!=0.].dropna()
-        vals = stringadd(ds, n.lines_t[f's{var_ref_suffix}'][ds.index], '\n')
+        vals = sumstr(ds, n.lines_t[f's{var_ref_suffix}'][ds.index], '\n')
         return vals.sum(1)
 
     constraints = []
@@ -138,11 +138,54 @@ def define_kirchhoff_constraints(n):
     set_conref(n, constraints, 'Line', 'kirchhoff_voltage')
 
 
+def define_storage_units_constraints(n, sns):
+    sus_i = n.storage_units.index
+    if sus_i.empty: return
+    c = 'StorageUnit'
+    #spillage
+    upper = get_as_dense(n, c, 'inflow').loc[:, lambda df: df.max() > 0]
+    spill = write_bound(n, 0, upper)
+    set_varref(n, spill, 'StorageUnit', 'spill')
+    #soc constraint
+    def aligned_frame(coefficient, df, subset=None):
+        if subset is not None:
+            coefficient = coefficient[subset]
+            df = df[subset]
+        return pd.DataFrame(*sumstr(coefficient, df, '\n', return_axes=True))\
+                 .reindex(index=sns, columns=sus_i, fill_value='')
+
+    #previous_soc + p_store - p_dispatch + inflow - spill == soc
+    #elapsed hours
+    eh = expand_series(n.snapshot_weightings, sus_i)
+
+    stand_eff = expand_series(1-n.df(c).standing_loss, sns).T.pow(eh)
+    dispatch_eff = expand_series(n.df(c).efficiency_dispatch, sns).T.mul(eh)
+    store_eff = expand_series(n.df(c).efficiency_store, sns).T.mul(eh)
+
+    soc = pnl_var(n, c, 'state_of_charge')
+    cyclic_i = n.df(c).query('cyclic_state_of_charge').index
+    noncyclic_i = n.df(c).query('~cyclic_state_of_charge').index
+
+    start_cyclic = soc.loc[sns[-1], cyclic_i]
+    start_noncyclic = n.df(c).state_of_charge_initial[noncyclic_i]
+
+    lhs = sumstr(
+        aligned_frame(1/store_eff, pnl_var(n, c, 'p_store')),
+        aligned_frame(-dispatch_eff, pnl_var(n, c, 'p_dispatch')),
+        aligned_frame(-eh, pnl_var(n, c, 'spill'), spill.columns),
+        aligned_frame(-1, soc),
+        aligned_frame(stand_eff, soc.shift().fillna(start_cyclic), cyclic_i),
+        aligned_frame(stand_eff.loc[sns[1:]], soc.shift().loc[sns[1:]], noncyclic_i)
+        )
+
+    rhs = -get_as_dense(n, c, 'inflow').mul(eh)
+    rhs.loc[sns[0]] -= start_noncyclic.reindex(sus_i, fill_value=0)
+
+    constraints = write_constraint(n, lhs, '==', rhs)
+    set_conref(n, constraints, c, 'soc')
+
+
 def define_store_constraints(n):
-    return
-
-
-def define_storage_units_constraints(n):
     return
 
 def define_global_constraints(n, sns):
@@ -160,7 +203,7 @@ def define_global_constraints(n, sns):
         gens = n.generators.query('carrier in @emissions.index')
         em_pu = gens.carrier.map(emissions)/gens.efficiency
         em_pu = n.snapshot_weightings.to_frame() @ em_pu.to_frame('weightings').T
-        vals = stringadd(em_pu, pnl_var(n, 'Generator', 'p')[gens.index])
+        vals = sumstr(em_pu, pnl_var(n, 'Generator', 'p')[gens.index])
         lhs = join_entries(vals)
 
         sus = n.storage_units.query('carrier in @emissions.index and '
@@ -168,7 +211,7 @@ def define_global_constraints(n, sns):
         if not sus.empty:
             lhs += (sus.carrier.map(emissions).mul(sus.state_of_charge_initial)
                     .pipe(numerical_to_string).pipe(join_entries))
-            vals = stringadd(-sus.carrier.map(n.emissions),
+            vals = sumstr(-sus.carrier.map(n.emissions),
                              pnl_var(n, 'StorageUnit', 'state_of_charge')
                                  .loc[sns[-1], sus.index])
             lhs += join_entries(vals)
@@ -177,7 +220,7 @@ def define_global_constraints(n, sns):
         if not stores.empty:
             lhs += (stores.carrier.map(emissions).mul(stores.e_initial)
                     .pipe(numerical_to_string).pipe(join_entries))
-            vals = stringadd(-sus.stores.map(n.emissions),
+            vals = sumstr(-sus.stores.map(n.emissions),
                         pnl_var(n, 'Store', 'e').loc[sns[-1], stores.index])
             lhs += join_entries(vals)
 
@@ -193,28 +236,21 @@ def define_objective(n):
                 .loc[:, lambda ds: (ds != 0).all()]
                 .mul(n.snapshot_weightings, axis=0))
         if cost.empty: continue
-        terms = stringadd(cost, pnl_var(n, c, attr)[cost.columns], '\n')
+        terms = sumstr(cost, pnl_var(n, c, attr)[cost.columns], '\n')
         for t in terms.flatten():
             n.objective_f.write(t)
     #investment
     for c, attr in prefix.items():
         cost = n.df(c)['capital_cost'][get_extendable_i(n, c)]
         if cost.empty: continue
-        terms = stringadd(cost, df_var(n, c, attr +'_nom')[cost.index], '\n')
+        terms = sumstr(cost, df_var(n, c, attr +'_nom')[cost.index], '\n')
         for t in terms.flatten():
             n.objective_f.write(t)
 
 
-def time_info(message):
-    global start
-
-
-
 def prepare_lopf(n, snapshots=None, keep_files=False,
-                 extra_functionality=None):
-    #align index
-    global xCounter, cCounter
-    xCounter, cCounter = 0, 0
+                 extra_functionality=None, working_mode=False):
+    reset_counter()
 
     snapshots = n.snapshots if snapshots is None else snapshots
     start = time.time()
@@ -246,6 +282,12 @@ def prepare_lopf(n, snapshots=None, keep_files=False,
         define_dispatch_for_extendable_variables(n, snapshots, c, attr)
         define_dispatch_for_extendable_constraints(n, snapshots, c, attr)
 
+
+    define_storage_units_constraints(n, snapshots)
+    time_info(f'define_storage_units_constraints')
+
+    if working_mode:
+        return
 
     define_kirchhoff_constraints(n)
     time_info(f'define_kirchhoff_constraints')
@@ -392,13 +434,14 @@ def assign_solution(n, sns, variables_sol, constraints_dual,
                 n.pnl(c)['p1'] = -values
             else:
                 n.pnl(c)[attr] = values
-        else:
+        elif not get_extendable_i(n, c).empty:
             n.df(c)[attr+'_opt'] = df_var(n, c, attr).map(variables_sol)
 
     for c, attr in lookup.query('nominal').loc[non_empty_components].index:
         map_solution(c, attr, pnl=False)
     for c, attr in lookup.query('not nominal').loc[non_empty_components].index:
         map_solution(c, attr, pnl=True)
+    map_solution('StorageUnit', 'spill')
 
     #duals
     def map_dual(c, attr, name=None, pnl=True):
@@ -412,8 +455,9 @@ def assign_solution(n, sns, variables_sol, constraints_dual,
     map_dual('Bus', 'nodal_balance', 'marginal_price')
     map_dual('GlobalConstraint', 'mu', pnl=False)
     for c in non_empty_components:
-        map_dual(c, 'mu_upper')
-        map_dual(c, 'mu_lower')
+        if not get_extendable_i(n, c).empty:
+            map_dual(c, 'mu_upper')
+            map_dual(c, 'mu_lower')
 
 
 def lopf(n, snapshots=None, solver_name="cbc",
