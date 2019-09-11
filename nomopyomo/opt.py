@@ -191,7 +191,7 @@ def get_non_extendable_i(n, c):
     return n.df(c)[lambda ds:
             ~ds[f'{prefix[c]}_nom_extendable']].index
 
-def get_bounds_pu(n, c, sns, index=None, attr=None):
+def get_bounds_pu(n, c, sns, index=slice(None), attr=None):
     """
     Getter function to retrieve the per unit bounds of a given compoent for
     given snapshots and possible subset of elements (e.g. non-extendables).
@@ -224,7 +224,7 @@ def get_bounds_pu(n, c, sns, index=None, attr=None):
             min_pu = - max_pu
     else:
         min_pu = get_as_dense(n, c, f'{prefix[c]}_min_pu', sns)
-    return (min_pu, max_pu) if index is None else (min_pu[index], max_pu[index])
+    return min_pu[index], max_pu[index]
 
 
 # =============================================================================

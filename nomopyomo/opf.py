@@ -90,7 +90,7 @@ def define_nodal_balance_constraints(n, sns):
 
     # one might reduce this a bit by using n.branches and lookup
     arg_list = [['Generator', 'p', 'bus', 1],
-                ['Store', 'e', 'bus', 1],
+                ['Store', 'p', 'bus', 1],
                 ['StorageUnit', 'p_dispatch', 'bus', 1],
                 ['StorageUnit', 'p_store', 'bus', -1],
                 ['Line', 's', 'bus0', -1],
@@ -138,7 +138,7 @@ def define_kirchhoff_constraints(n):
     set_conref(n, constraints, 'Line', 'kirchhoff_voltage')
 
 
-def define_storage_units_constraints(n, sns):
+def define_storage_unit_constraints(n, sns):
     sus_i = n.storage_units.index
     if sus_i.empty: return
     c = 'StorageUnit'
@@ -167,7 +167,6 @@ def define_storage_units_constraints(n, sns):
     noncyclic_i = n.df(c).query('~cyclic_state_of_charge').index
 
     prev_soc_cyclic = soc.shift().fillna(soc.loc[sns[-1]])
-    start_noncyclic = n.df(c).state_of_charge_initial[noncyclic_i]
 
     lhs = sumstr(aligned_frame(store_eff, pnl_var(n, c, 'p_store')),
                  aligned_frame(-1/dispatch_eff, pnl_var(n, c, 'p_dispatch')),
@@ -178,14 +177,48 @@ def define_storage_units_constraints(n, sns):
                                noncyclic_i))
 
     rhs = -get_as_dense(n, c, 'inflow').mul(eh)
-    rhs.loc[sns[0]] -= start_noncyclic.reindex(sus_i, fill_value=0)
+    rhs.loc[sns[0], noncyclic_i] -= n.df(c).state_of_charge_initial[noncyclic_i]
 
     constraints = write_constraint(n, lhs, '==', rhs)
     set_conref(n, constraints, c, 'soc')
 
 
-def define_store_constraints(n):
-    return
+def define_store_constraints(n, sns):
+    stores_i = n.stores.index
+    if stores_i.empty: return
+    c = 'Store'
+    variables = write_bound(n, -np.inf, np.inf, axes=[sns, stores_i])
+    set_varref(n, variables, c, 'p')
+
+    def aligned_frame(coefficient, df, subset=None):
+        if subset is not None:
+            coefficient = coefficient[subset]
+            df = df[subset]
+        return pd.DataFrame(*sumstr(coefficient, df, '\n', return_axes=True))\
+                 .reindex(index=sns, columns=stores_i, fill_value='')
+
+    #previous_e - p == e
+    eh = expand_series(n.snapshot_weightings, stores_i)  #elapsed hours
+    stand_eff = expand_series(1-n.df(c).standing_loss, sns).T.pow(eh)
+
+    e = pnl_var(n, c, 'e')
+    cyclic_i = n.df(c).query('e_cyclic').index
+    noncyclic_i = n.df(c).query('~e_cyclic').index
+
+    previous_e_cyclic = e.shift().fillna(e.loc[sns[-1]])
+
+    lhs = sumstr(aligned_frame(-eh, pnl_var(n, c, 'p')),
+                 aligned_frame(-1, e),
+                 aligned_frame(stand_eff, previous_e_cyclic, cyclic_i),
+                 aligned_frame(stand_eff.loc[sns[1:]], e.shift().loc[sns[1:]],
+                               noncyclic_i))
+
+    rhs = pd.DataFrame(0, sns, stores_i)
+    rhs.loc[sns[0], noncyclic_i] -= n.df(c).e_initial[noncyclic_i]
+
+    constraints = write_constraint(n, lhs, '==', rhs)
+    set_conref(n, constraints, c, 'soc')
+
 
 def define_global_constraints(n, sns):
 
@@ -257,66 +290,54 @@ def prepare_lopf(n, snapshots=None, keep_files=False,
     snapshots = n.snapshots if snapshots is None else snapshots
     start = time.time()
     def time_info(message):
-        print(message, '\t', time.time()-start)
+        logger.info(f'{message} {int(time.time()-start)}s')
 
     n.identifier = ''.join(random.choice(string.ascii_lowercase)
                         for i in range(8))
-    n.objective_fn = f"/tmp/objective-{n.identifier}.txt"
-    n.constraints_fn = f"/tmp/constraints-{n.identifier}.txt"
-    n.bounds_fn = f"/tmp/bounds-{n.identifier}.txt"
+    objective_fn = f"/tmp/objective-{n.identifier}.txt"
+    constraints_fn = f"/tmp/constraints-{n.identifier}.txt"
+    bounds_fn = f"/tmp/bounds-{n.identifier}.txt"
     n.problem_fn = f"/tmp/test-{n.identifier}.lp"
 
-    n.objective_f = open(n.objective_fn, mode='w')
-    n.constraints_f = open(n.constraints_fn, mode='w')
-    n.bounds_f = open(n.bounds_fn, mode='w')
+    n.objective_f = open(objective_fn, mode='w')
+    n.constraints_f = open(constraints_fn, mode='w')
+    n.bounds_f = open(bounds_fn, mode='w')
 
     n.objective_f.write('\* LOPF *\n\nmin\nobj:\n')
     n.constraints_f.write("\n\ns.t.\n\n")
     n.bounds_f.write("\nbounds\n")
 
 
-    for c, attr in lookup.query('nominal').index:
-        time_info(f'{c} {attr}')
+    for c, attr in lookup.query('nominal and not handle_separately').index:
         define_nominal_for_extendable_variables(n, c)
-    for c, attr in lookup.query('not nominal').index:
-        time_info(f'{c} {attr}')
+    for c, attr in lookup.query('not nominal and not handle_separately').index:
         define_dispatch_for_non_extendable_variables(n, snapshots, c, attr)
         define_dispatch_for_extendable_variables(n, snapshots, c, attr)
         define_dispatch_for_extendable_constraints(n, snapshots, c, attr)
 
-
-    define_storage_units_constraints(n, snapshots)
-    time_info(f'define_storage_units_constraints')
-
-    if working_mode:
-        return
-
+    define_storage_unit_constraints(n, snapshots)
+    define_store_constraints(n, snapshots)
     define_kirchhoff_constraints(n)
-    time_info(f'define_kirchhoff_constraints')
-
     define_nodal_balance_constraints(n, n.snapshots)
-    time_info(f'define_nodal_balance_constraints')
-
-
     define_global_constraints(n, n.snapshots)
-    time_info(f'define_global_constraints')
-
     define_objective(n)
-    time_info('define_objective')
+
     n.objective_f.close()
-
     n.constraints_f.close()
-
     n.bounds_f.write("end\n")
     n.bounds_f.close()
 
-    os.system(f"cat {n.objective_fn} {n.constraints_fn} {n.bounds_fn} "
+    del n.objective_f
+    del n.constraints_f
+    del n.bounds_f
+
+    os.system(f"cat {objective_fn} {constraints_fn} {bounds_fn} "
               f"> {n.problem_fn}")
 
-    time_info('total preparation time')
+    time_info('Total preparation time:')
 
     if not keep_files:
-        for fn in [n.objective_fn, n.constraints_fn, n.bounds_fn]:
+        for fn in [objective_fn, constraints_fn, bounds_fn]:
             os.system("rm "+ fn)
 
 # =============================================================================
@@ -328,11 +349,11 @@ def run_cbc(filename, solution_fn, solver_logfile, solver_options, keep_files):
     #printingOptions is about what goes in solution file
     command = (f"cbc -printingOptions all -import {filename}"
                f" -stat=1 -solve {options} -solu {solution_fn}")
-    logger.info("Running command:")
-    logger.info(command)
+#    logger.info("Running command:")
+#    logger.info(command)
     os.system(command)
-    #logfile = open(solver_logfile, 'w')
-    #status = subprocess.run(["cbc",command[4:]], bufsize=0, stdout=logfile)
+#    logfile = open(solver_logfile, 'w')
+#    status = subprocess.run(["cbc",command[4:]], bufsize=0, stdout=logfile)
     #logfile.close()
 
     if not keep_files:
@@ -359,8 +380,8 @@ def run_gurobi(n, filename, solution_fn, solver_logfile,
 
     command = "gurobi.sh {}".format(script_fn)
 
-    logger.info("Running command:")
-    logger.info(command)
+#    logger.info("Running command:")
+#    logger.info(command)
     os.system(command)
 
     if not keep_files:
@@ -371,7 +392,7 @@ def run_gurobi(n, filename, solution_fn, solver_logfile,
 def read_cbc(n, solution_fn, keep_files):
     f = open(solution_fn,"r")
     data = f.readline()
-    logger.info(data)
+#    logger.info(data)
     f.close()
 
     status = "ok"
@@ -401,9 +422,7 @@ def read_cbc(n, solution_fn, keep_files):
 
 def read_gurobi(n, solution_fn, keep_files):
     f = open(solution_fn,"r")
-    for i in range(23):
-        data = f.readline()
-        logger.info(data)
+    lines = [f.readline().replace('\n', '') for i in range(23)]
     f.close()
 
     sol = pd.read_csv(solution_fn, header=None, skiprows=range(23),
@@ -415,16 +434,17 @@ def read_gurobi(n, solution_fn, keep_files):
     if not keep_files:
        os.system("rm "+ solution_fn)
 
-    status = "ok"
-    termination_condition = "optimal"
+    status = lines[12].split(' ')[1]
+    termination_condition = lines[19].split(' ')[1]
+    n.objective = float(lines[21].split(' ')[1])
 
     return status, termination_condition, variables_sol, constraints_dual
 
 
 def assign_solution(n, sns, variables_sol, constraints_dual,
-                    extra_postprocessing, remove_references=True):
+                    extra_postprocessing, remove_references=False):
     non_empty_components = [c for c in prefix.index if not n.df(c).empty]
-    pop=remove_references
+    pop = remove_references
     #solutions
     def map_solution(c, attr, pnl=True):
         if pnl:
@@ -438,16 +458,18 @@ def assign_solution(n, sns, variables_sol, constraints_dual,
         elif not get_extendable_i(n, c).empty:
             n.df(c)[attr+'_opt'] = df_var(n, c, attr, pop=pop)\
                                     .map(variables_sol).fillna(n.df(c)[attr])
-
+        else:
+            n.df(c)[attr+'_opt'] = n.df(c)[attr]
 
     for c, attr in lookup.query('nominal').loc[non_empty_components].index:
         map_solution(c, attr, pnl=False)
     for c, attr in lookup.query('not nominal').loc[non_empty_components].index:
         map_solution(c, attr, pnl=True)
+
     c = 'StorageUnit'
-    map_solution(c, 'spill')
-    #use pop here as well
-    n.pnl(c)['p'] = n.pnl(c)['p_dispatch'] - n.pnl(c)['p_store']
+    if c in non_empty_components:
+        map_solution(c, 'spill')
+        n.pnl(c)['p'] = n.pnl(c)['p_dispatch'] - n.pnl(c)['p_store']
 
     #duals
     def map_dual(c, attr, name=None, pnl=True):
@@ -531,7 +553,7 @@ def lopf(n, snapshots=None, solver_name="cbc",
     gc.collect()
     solution_fn = "/tmp/test-{}.sol".format(n.identifier)
 
-    logger.info("Prepare linear problem")
+    logger.info("Solve linear problem")
 
     if solver_name == "cbc":
         run_cbc(n.problem_fn, solution_fn, solver_logfile,

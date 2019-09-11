@@ -8,7 +8,7 @@ Created on Wed Sep 11 11:56:34 2019
 
 import pypsa
 import pandas as pd
-from .opt import expand_series
+from .opt import expand_series, prefix
 
 
 def check_storage_units_contraints(n, tol=1e-3):
@@ -22,6 +22,7 @@ def check_storage_units_contraints(n, tol=1e-3):
     """
     sus = n.storage_units
     sus_i = sus.index
+    if sus_i.empty: return
     sns = n.snapshots
     c = 'StorageUnit'
     pnl = n.pnl(c)
@@ -48,7 +49,7 @@ def check_storage_units_contraints(n, tol=1e-3):
                     .add(inflow, fill_value=0)
                     .add(-dispatch, fill_value=0)
                     .add(-spill, fill_value=0))
-    return (reconstructed - soc).abs().max().max() < tol
+    assert (reconstructed - soc).abs().max().max() < tol
 
 
 def Incidence(n, branch_components=['Link', 'Line']):
@@ -69,4 +70,12 @@ def check_nodal_balance_constraint(n, tol=1e-9):
     K = Incidence(n)
     f = pd.concat([n.lines_t.p0, n.links_t.p0], axis=1,
                   keys=['Line', 'Link']).T
-    return (K.dot(f)).sum(0).max() < tol
+    assert (K.dot(f)).sum(0).max() < tol
+
+def check_nominal_bounds(n, tol=1e-3):
+    for c, attr in prefix.items():
+        dispatch_attr = 'p0' if c in ['Line', 'Transformer', 'Link'] else attr
+        assert (n.pnl(c)[dispatch_attr].abs().max().add(-tol)
+                <= n.df(c)[attr + '_nom_opt']).all(), ('Test for nominal bounds'
+                f' for component {c} failed')
+
