@@ -7,3 +7,4 @@ Created on Sat Sep  7 17:51:14 2019
 """
 
 from .opf import lopf, prepare_lopf
+from . import test, opt

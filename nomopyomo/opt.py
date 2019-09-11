@@ -264,7 +264,7 @@ def set_conref(n, constraints, c, attr, pnl=True):
     """
     _add_reference(n, constraints, c, attr, con_ref_suffix, pnl=pnl)
 
-def pnl_var(n, c, attr):
+def pnl_var(n, c, attr, pop=False):
     """
     Retrieves variable references for a given time-depending attribute attr
     of a give component c.
@@ -273,9 +273,11 @@ def pnl_var(n, c, attr):
     -------
     pnl_var(n, 'Generator', 'p')
     """
+    if pop:
+        return n.pnl(c).pop(attr + var_ref_suffix)
     return n.pnl(c)[attr + var_ref_suffix]
 
-def df_var(n, c, attr):
+def df_var(n, c, attr, pop=False):
     """
     Retrieves variable references for a given static attribute attr
     of a give component c.
@@ -284,9 +286,11 @@ def df_var(n, c, attr):
     -------
     df_var(n, 'Line', 's_nom')
     """
+    if pop:
+        return n.df(c).pop(attr + var_ref_suffix)
     return n.df(c)[attr + var_ref_suffix]
 
-def pnl_con(n, c, attr):
+def pnl_con(n, c, attr, pop=False):
     """
     Retrieves constraint references for a given time-depending attribute attr
     of a give component c.
@@ -295,9 +299,11 @@ def pnl_con(n, c, attr):
     -------
     pnl_con(n, 'Generator', 'mu_upper')
     """
+    if pop:
+        return n.pnl(c).pop(attr + con_ref_suffix)
     return n.pnl(c)[attr + con_ref_suffix]
 
-def df_con(n, c, attr):
+def df_con(n, c, attr, pop=False):
     """
     Retrieves contraint references for a given static attribute attr
     of a give component c.
@@ -306,4 +312,6 @@ def df_con(n, c, attr):
     -------
     df_con(n, 'GlobalConstraint', 'mu')
     """
+    if pop:
+        return n.df(c).pop(attr + con_ref_suffix)
     return n.df(c)[attr + con_ref_suffix]

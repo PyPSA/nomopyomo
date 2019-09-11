@@ -166,17 +166,16 @@ def define_storage_units_constraints(n, sns):
     cyclic_i = n.df(c).query('cyclic_state_of_charge').index
     noncyclic_i = n.df(c).query('~cyclic_state_of_charge').index
 
-    start_cyclic = soc.loc[sns[-1], cyclic_i]
+    prev_soc_cyclic = soc.shift().fillna(soc.loc[sns[-1]])
     start_noncyclic = n.df(c).state_of_charge_initial[noncyclic_i]
 
-    lhs = sumstr(
-        aligned_frame(1/store_eff, pnl_var(n, c, 'p_store')),
-        aligned_frame(-dispatch_eff, pnl_var(n, c, 'p_dispatch')),
-        aligned_frame(-eh, pnl_var(n, c, 'spill'), spill.columns),
-        aligned_frame(-1, soc),
-        aligned_frame(stand_eff, soc.shift().fillna(start_cyclic), cyclic_i),
-        aligned_frame(stand_eff.loc[sns[1:]], soc.shift().loc[sns[1:]], noncyclic_i)
-        )
+    lhs = sumstr(aligned_frame(store_eff, pnl_var(n, c, 'p_store')),
+                 aligned_frame(-1/dispatch_eff, pnl_var(n, c, 'p_dispatch')),
+                 aligned_frame(-eh, pnl_var(n, c, 'spill'), spill.columns),
+                 aligned_frame(-1, soc),
+                 aligned_frame(stand_eff, prev_soc_cyclic, cyclic_i),
+                 aligned_frame(stand_eff.loc[sns[1:]], soc.shift().loc[sns[1:]],
+                               noncyclic_i))
 
     rhs = -get_as_dense(n, c, 'inflow').mul(eh)
     rhs.loc[sns[0]] -= start_noncyclic.reindex(sus_i, fill_value=0)
@@ -206,6 +205,7 @@ def define_global_constraints(n, sns):
         vals = sumstr(em_pu, pnl_var(n, 'Generator', 'p')[gens.index])
         lhs = join_entries(vals)
 
+        #storage units
         sus = n.storage_units.query('carrier in @emissions.index and '
                                     'not cyclic_state_of_charge')
         if not sus.empty:
@@ -215,6 +215,8 @@ def define_global_constraints(n, sns):
                              pnl_var(n, 'StorageUnit', 'state_of_charge')
                                  .loc[sns[-1], sus.index])
             lhs += join_entries(vals)
+
+        #stores
         n.stores['carrier'] = n.stores.bus.map(n.buses.carrier)
         stores = n.stores.query('carrier in @emissions.index and not e_cyclic')
         if not stores.empty:
@@ -316,8 +318,6 @@ def prepare_lopf(n, snapshots=None, keep_files=False,
     if not keep_files:
         for fn in [n.objective_fn, n.constraints_fn, n.bounds_fn]:
             os.system("rm "+ fn)
-
-
 
 # =============================================================================
 # solvers, solving, assigning
@@ -422,12 +422,13 @@ def read_gurobi(n, solution_fn, keep_files):
 
 
 def assign_solution(n, sns, variables_sol, constraints_dual,
-                    extra_postprocessing):
+                    extra_postprocessing, remove_references=True):
     non_empty_components = [c for c in prefix.index if not n.df(c).empty]
+    pop=remove_references
     #solutions
     def map_solution(c, attr, pnl=True):
         if pnl:
-            values = (pnl_var(n, c, attr).stack()
+            values = (pnl_var(n, c, attr, pop=pop).stack()
                       .map(variables_sol).unstack())
             if c in n.passive_branch_components ^ {'Link'}:
                 n.pnl(c)['p0'] = values
@@ -435,22 +436,27 @@ def assign_solution(n, sns, variables_sol, constraints_dual,
             else:
                 n.pnl(c)[attr] = values
         elif not get_extendable_i(n, c).empty:
-            n.df(c)[attr+'_opt'] = df_var(n, c, attr).map(variables_sol)
+            n.df(c)[attr+'_opt'] = df_var(n, c, attr, pop=pop)\
+                                    .map(variables_sol).fillna(n.df(c)[attr])
+
 
     for c, attr in lookup.query('nominal').loc[non_empty_components].index:
         map_solution(c, attr, pnl=False)
     for c, attr in lookup.query('not nominal').loc[non_empty_components].index:
         map_solution(c, attr, pnl=True)
-    map_solution('StorageUnit', 'spill')
+    c = 'StorageUnit'
+    map_solution(c, 'spill')
+    #use pop here as well
+    n.pnl(c)['p'] = n.pnl(c)['p_dispatch'] - n.pnl(c)['p_store']
 
     #duals
     def map_dual(c, attr, name=None, pnl=True):
         if name is None: name = attr
         if pnl:
-            n.pnl(c)[attr] = (pnl_con(n, c, attr).stack()
+            n.pnl(c)[attr] = (pnl_con(n, c, attr, pop=pop).stack()
                                       .map(-constraints_dual).unstack())
         else:
-            n.df(c)[attr] = df_con(n, c, attr).map(-constraints_dual)
+            n.df(c)[attr] = df_con(n, c, attr, pop=pop).map(-constraints_dual)
 
     map_dual('Bus', 'nodal_balance', 'marginal_price')
     map_dual('GlobalConstraint', 'mu', pnl=False)
