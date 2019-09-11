@@ -11,7 +11,7 @@ import pandas as pd
 from .opt import expand_series, prefix
 
 
-def check_storage_units_contraints(n, tol=1e-3):
+def check_storage_unit_contraints(n, tol=1e-3):
     """
     Checks whether all storage units are balanced over time. This function
     requires the network to contain the separate variables p_store and
@@ -52,25 +52,17 @@ def check_storage_units_contraints(n, tol=1e-3):
     assert (reconstructed - soc).abs().max().max() < tol
 
 
-def Incidence(n, branch_components=['Link', 'Line']):
-    buses = n.buses.index
-    return pd.concat([(n.df(c).assign(K=1).set_index('bus0', append=True)['K']
-                     .unstack().reindex(columns=buses).fillna(0).T)
-                     - (n.df(c).assign(K=1).set_index('bus1', append=True)['K']
-                     .unstack().reindex(columns=buses).fillna(0).T)
-                     for c in branch_components],
-                     keys=branch_components, axis=1, sort=False)\
-            .reindex(columns=n.branches().loc[branch_components].index)\
-            .rename_axis(columns=['component', 'branch_i'])
-
-def check_nodal_balance_constraint(n, tol=1e-9):
+def check_nodal_balance_constraint(n, tol=1e-3):
     """
     Helper function to double check whether network flow is balanced
     """
-    K = Incidence(n)
-    f = pd.concat([n.lines_t.p0, n.links_t.p0], axis=1,
-                  keys=['Line', 'Link']).T
-    assert (K.dot(f)).sum(0).max() < tol
+    injection_refs = [('Line', 'p0', 'bus0'), ('Line', 'p1', 'bus1'),
+                      ('Link', 'p0', 'bus0'), ('Link', 'p1', 'bus1'),
+                      ('Transformer', 'p0', 'bus0'), ('Transformer', 'p1', 'bus1')]
+    network_injection = pd.concat([n.pnl(c)[attr].rename(columns=n.df(c)[buscol])
+                                 for c, attr, buscol in injection_refs], axis=1)\
+                          .groupby(level=0, axis=1).sum()
+    assert (n.buses_t.p - network_injection).abs().max().max() < tol
 
 def check_nominal_bounds(n, tol=1e-3):
     for c, attr in prefix.items():
@@ -78,4 +70,24 @@ def check_nominal_bounds(n, tol=1e-3):
         assert (n.pnl(c)[dispatch_attr].abs().max().add(-tol)
                 <= n.df(c)[attr + '_nom_opt']).all(), ('Test for nominal bounds'
                 f' for component {c} failed')
+
+
+def check_store_contraints(n, tol=1e-3):
+    """
+    Checks whether all stores are balanced over time.
+    """
+    stores = n.stores
+    stores_i = stores.index
+    if stores_i.empty: return
+    sns = n.snapshots
+    c = 'Store'
+    pnl = n.pnl(c)
+
+    eh = expand_series(n.snapshot_weightings, stores_i)
+    stand_eff = expand_series(1-n.df(c).standing_loss, sns).T.pow(eh)
+
+    start = pnl.e.iloc[-1].where(stores.e_cyclic, stores.e_initial)
+    previous_e = stand_eff * pnl.e.shift().fillna(start)
+
+    assert (previous_e - pnl.p - pnl.e).abs().max().max() < tol
 

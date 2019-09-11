@@ -89,19 +89,14 @@ def define_nodal_balance_constraints(n, sns):
         return pd.DataFrame(*vals).rename(columns=n.df(c)[groupcol])
 
     # one might reduce this a bit by using n.branches and lookup
-    arg_list = [['Generator', 'p', 'bus', 1],
-                ['Store', 'p', 'bus', 1],
-                ['StorageUnit', 'p_dispatch', 'bus', 1],
-                ['StorageUnit', 'p_store', 'bus', -1],
-                ['Line', 's', 'bus0', -1],
-                ['Line', 's', 'bus1', 1],
-                ['Transformer', 's', 'bus0', -1],
-                ['Transformer', 's', 'bus1', 1],
-                ['Link', 'p', 'bus0', -1],
-                ['Link', 'p', 'bus1', n.links.efficiency]]
-    arg_list = [arg for arg in arg_list if not n.df(arg[0]).empty]
+    args = [['Generator', 'p'], ['Store', 'p'], ['StorageUnit', 'p_dispatch'],
+            ['StorageUnit', 'p_store', 'bus', -1], ['Line', 's', 'bus0', -1],
+            ['Line', 's', 'bus1', 1], ['Transformer', 's', 'bus0', -1],
+            ['Transformer', 's', 'bus1', 1], ['Link', 'p', 'bus0', -1],
+            ['Link', 'p', 'bus1', n.links.efficiency]]
+    args = [arg for arg in args if not n.df(arg[0]).empty]
 
-    lhs = (pd.concat([bus_injection(*args) for args in arg_list], axis=1)
+    lhs = (pd.concat([bus_injection(*args) for args in args], axis=1)
            .groupby(axis=1, level=0)
            .agg(lambda x: '\n'.join(x.values))
            .reindex(columns=n.buses.index))
@@ -155,8 +150,7 @@ def define_storage_unit_constraints(n, sns):
                  .reindex(index=sns, columns=sus_i, fill_value='')
 
     #previous_soc + p_store - p_dispatch + inflow - spill == soc
-    #elapsed hours
-    eh = expand_series(n.snapshot_weightings, sus_i)
+    eh = expand_series(n.snapshot_weightings, sus_i) #elapsed hours
 
     stand_eff = expand_series(1-n.df(c).standing_loss, sns).T.pow(eh)
     dispatch_eff = expand_series(n.df(c).efficiency_dispatch, sns).T.mul(eh)
@@ -450,9 +444,12 @@ def assign_solution(n, sns, variables_sol, constraints_dual,
         if pnl:
             values = (pnl_var(n, c, attr, pop=pop).stack()
                       .map(variables_sol).unstack())
-            if c in n.passive_branch_components ^ {'Link'}:
+            if c in n.passive_branch_components:
                 n.pnl(c)['p0'] = values
-                n.pnl(c)['p1'] = -values
+                n.pnl(c)['p1'] = - values
+            elif c == 'Link':
+                n.pnl(c)['p0'] = values
+                n.pnl(c)['p1'] = - values * n.df(c).efficiency
             else:
                 n.pnl(c)[attr] = values
         elif not get_extendable_i(n, c).empty:
@@ -475,10 +472,10 @@ def assign_solution(n, sns, variables_sol, constraints_dual,
     def map_dual(c, attr, name=None, pnl=True):
         if name is None: name = attr
         if pnl:
-            n.pnl(c)[attr] = (pnl_con(n, c, attr, pop=pop).stack()
+            n.pnl(c)[name] = (pnl_con(n, c, attr, pop=pop).stack()
                                       .map(-constraints_dual).unstack())
         else:
-            n.df(c)[attr] = df_con(n, c, attr, pop=pop).map(-constraints_dual)
+            n.df(c)[name] = df_con(n, c, attr, pop=pop).map(-constraints_dual)
 
     map_dual('Bus', 'nodal_balance', 'marginal_price')
     map_dual('GlobalConstraint', 'mu', pnl=False)
@@ -486,6 +483,15 @@ def assign_solution(n, sns, variables_sol, constraints_dual,
         if not get_extendable_i(n, c).empty:
             map_dual(c, 'mu_upper')
             map_dual(c, 'mu_lower')
+
+    #load
+    n.loads_t.p = n.loads_t.p_set
+
+    #injection
+    ca = [('Generator', 'p', ), ('Store', 'p'), ('StorageUnit', 'p'), ('Load', 'p')]
+    n.buses_t.p = pd.concat(
+                    [n.pnl(c)[attr].mul(n.df(c).sign).rename(columns=n.df(c).bus)
+                     for c, attr in ca], axis=1).groupby(level=0, axis=1).sum()
 
 
 def lopf(n, snapshots=None, solver_name="cbc",
