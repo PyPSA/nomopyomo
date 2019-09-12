@@ -343,26 +343,19 @@ def run_gurobi(n, filename, solution_fn, solver_logfile,
                solver_options, keep_files):
 
     solver_options["logfile"] = solver_logfile
+    script = (
+       f'import sys \n'
+       'from gurobipy import * \n'
+       f'path = "{os.path.dirname(pyomo.__file__)}/solvers/plugins/solvers" \n'
+       'sys.path.append(path) \n'
+       'from GUROBI_RUN import * \n'
+       f'gurobi_run("{filename}",None,"{solution_fn}",None,{solver_options},["dual"],) \n'
+       'quit()')
 
     script_fn = "/tmp/gurobi-{}.script".format(n.identifier)
-    script_f = open(script_fn,"w")
-    script_f.write('import sys\n')
-    script_f.write('from gurobipy import *\n')
-    script_f.write(f'sys.path.append("{os.path.dirname(pyomo.__file__)}'
-                   '/solvers/plugins/solvers")\n')
-    #script_f.write('sys.path.append("{}")\n'.format(os.path.dirname(__file__)))
-    script_f.write('from GUROBI_RUN import *\n')
-    #2nd argument is warmstart
-    script_f.write(f'gurobi_run("{filename}",None,"{solution_fn}",None,'
-                   f'{solver_options},["dual"],)\n')
-    script_f.write('quit()\n')
-    script_f.close()
-
-    command = "gurobi.sh {}".format(script_fn)
-
-#    logger.info("Running command:")
-#    logger.info(command)
-    os.system(command)
+    with open(script_fn,"w") as fn:
+        fn.write(script)
+    os.system(f"gurobi.sh {script_fn}")
 
     if not keep_files:
         os.system("rm "+ filename)
