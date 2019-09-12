@@ -231,12 +231,29 @@ def get_bounds_pu(n, c, sns, index=slice(None), attr=None):
         if attr == 'p_store':
             max_pu = - get_as_dense(n, c, f'{prefix[c]}_min_pu', sns)
         if attr == 'state_of_charge':
-            max_pu = pd.concat([n.df(c).max_hours]*len(sns), keys=sns, axis=1).T
+            max_pu = expand_series(n.df(c).max_hours, sns).T
             min_pu = - max_pu
     else:
         min_pu = get_as_dense(n, c, f'{prefix[c]}_min_pu', sns)
     return min_pu[index], max_pu[index]
 
+
+def align_frame_function_getter(n, c, snapshots):
+    """
+    Returns a function for a given component and  given snapshots which aligns
+    coefficients and variables according to the component. The resulting
+    frames then can directly be string-concated. Used for stores and
+    storage units, where variables are treated differently because of cyclic
+    non-cyclic differentiation.
+    """
+    columns = n.df(c).index
+    def aligned_frame(coefficient, df, subset=None):
+        if subset is not None:
+            coefficient = coefficient[subset]
+            df = df[subset]
+        return pd.DataFrame(*sumstr(coefficient, df, '\n', return_axes=True))\
+                 .reindex(index=snapshots, columns=columns, fill_value='')
+    return aligned_frame
 
 # =============================================================================
 #  references to vars and cons, rewrite this part to not store every reference

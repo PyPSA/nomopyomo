@@ -21,7 +21,7 @@ from .opt import (get_as_dense, get_bounds_pu, get_extendable_i,
                   numerical_to_string, set_conref, set_varref,
                   df_var, df_con, pnl_var, pnl_con, lookup, prefix,
                   var_ref_suffix, sumstr, reset_counter, expand_series,
-                  join_entries)
+                  join_entries, align_frame_function_getter)
 
 from pypsa.pf import find_cycles as find_cycles, _as_snapshots
 
@@ -142,20 +142,15 @@ def define_storage_unit_constraints(n, sns):
     upper = get_as_dense(n, c, 'inflow').loc[:, lambda df: df.max() > 0]
     spill = write_bound(n, 0, upper)
     set_varref(n, spill, 'StorageUnit', 'spill')
-    #soc constraint
-    def aligned_frame(coefficient, df, subset=None):
-        if subset is not None:
-            coefficient = coefficient[subset]
-            df = df[subset]
-        return pd.DataFrame(*sumstr(coefficient, df, '\n', return_axes=True))\
-                 .reindex(index=sns, columns=sus_i, fill_value='')
 
-    #previous_soc + p_store - p_dispatch + inflow - spill == soc
+    #soc constraint previous_soc + p_store - p_dispatch + inflow - spill == soc
+    align_frame = align_frame_function_getter(n, c, sns)
+
     eh = expand_series(n.snapshot_weightings, sus_i) #elapsed hours
 
-    stand_eff = expand_series(1-n.df(c).standing_loss, sns).T.pow(eh)
-    dispatch_eff = expand_series(n.df(c).efficiency_dispatch, sns).T.mul(eh)
-    store_eff = expand_series(n.df(c).efficiency_store, sns).T.mul(eh)
+    eff_stand = expand_series(1-n.df(c).standing_loss, sns).T.pow(eh)
+    eff_dispatch = expand_series(n.df(c).efficiency_dispatch, sns).T
+    eff_store = expand_series(n.df(c).efficiency_store, sns).T
 
     soc = pnl_var(n, c, 'state_of_charge')
     cyclic_i = n.df(c).query('cyclic_state_of_charge').index
@@ -163,13 +158,14 @@ def define_storage_unit_constraints(n, sns):
 
     prev_soc_cyclic = soc.shift().fillna(soc.loc[sns[-1]])
 
-    lhs = sumstr(aligned_frame(store_eff, pnl_var(n, c, 'p_store')),
-                 aligned_frame(-1/dispatch_eff, pnl_var(n, c, 'p_dispatch')),
-                 aligned_frame(-eh, pnl_var(n, c, 'spill'), spill.columns),
-                 aligned_frame(-1, soc),
-                 aligned_frame(stand_eff, prev_soc_cyclic, cyclic_i),
-                 aligned_frame(stand_eff.loc[sns[1:]], soc.shift().loc[sns[1:]],
-                               noncyclic_i))
+    coeff_var = [(-1, soc),
+                 (-1/eff_dispatch * eh, pnl_var(n, c, 'p_dispatch')),
+                 (-eh, pnl_var(n, c, 'spill'), spill.columns),
+                 (eff_store * eh, pnl_var(n, c, 'p_store')),
+                 (eff_stand, prev_soc_cyclic, cyclic_i),
+                 (eff_stand.loc[sns[1:]], soc.shift().loc[sns[1:]], noncyclic_i)]
+    aligned_coeff_var = [align_frame(*args) for args in coeff_var]
+    lhs = sumstr(*aligned_coeff_var)
 
     rhs = -get_as_dense(n, c, 'inflow').mul(eh)
     rhs.loc[sns[0], noncyclic_i] -= n.df(c).state_of_charge_initial[noncyclic_i]
@@ -185,16 +181,10 @@ def define_store_constraints(n, sns):
     variables = write_bound(n, -np.inf, np.inf, axes=[sns, stores_i])
     set_varref(n, variables, c, 'p')
 
-    def aligned_frame(coefficient, df, subset=None):
-        if subset is not None:
-            coefficient = coefficient[subset]
-            df = df[subset]
-        return pd.DataFrame(*sumstr(coefficient, df, '\n', return_axes=True))\
-                 .reindex(index=sns, columns=stores_i, fill_value='')
-
     #previous_e - p == e
+    align_frame = align_frame_function_getter(n, c, sns)
     eh = expand_series(n.snapshot_weightings, stores_i)  #elapsed hours
-    stand_eff = expand_series(1-n.df(c).standing_loss, sns).T.pow(eh)
+    eff_stand = expand_series(1-n.df(c).standing_loss, sns).T.pow(eh)
 
     e = pnl_var(n, c, 'e')
     cyclic_i = n.df(c).query('e_cyclic').index
@@ -202,11 +192,12 @@ def define_store_constraints(n, sns):
 
     previous_e_cyclic = e.shift().fillna(e.loc[sns[-1]])
 
-    lhs = sumstr(aligned_frame(-eh, pnl_var(n, c, 'p')),
-                 aligned_frame(-1, e),
-                 aligned_frame(stand_eff, previous_e_cyclic, cyclic_i),
-                 aligned_frame(stand_eff.loc[sns[1:]], e.shift().loc[sns[1:]],
-                               noncyclic_i))
+    coeff_var = [(-eh, pnl_var(n, c, 'p')),
+                 (-1, e),
+                 (eff_stand, previous_e_cyclic, cyclic_i),
+                 (eff_stand.loc[sns[1:]], e.shift().loc[sns[1:]], noncyclic_i)]
+    aligned_coeff_var = [align_frame(*args) for args in coeff_var]
+    lhs = sumstr(*aligned_coeff_var)
 
     rhs = pd.DataFrame(0, sns, stores_i)
     rhs.loc[sns[0], noncyclic_i] -= n.df(c).e_initial[noncyclic_i]
@@ -431,7 +422,7 @@ def read_gurobi(n, solution_fn, keep_files):
 
 
 def assign_solution(n, sns, variables_sol, constraints_dual,
-                    extra_postprocessing, remove_references=False):
+                    extra_postprocessing, remove_references=True):
     non_empty_components = [c for c in prefix.index if not n.df(c).empty]
     pop = remove_references
     #solutions
@@ -460,7 +451,6 @@ def assign_solution(n, sns, variables_sol, constraints_dual,
 
     c = 'StorageUnit'
     if c in non_empty_components:
-        map_solution(c, 'spill')
         n.pnl(c)['p'] = n.pnl(c)['p_dispatch'] - n.pnl(c)['p_store']
 
     #duals

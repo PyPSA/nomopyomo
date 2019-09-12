@@ -29,13 +29,13 @@ def check_storage_unit_contraints(n, tol=1e-3):
 
     eh = expand_series(n.snapshot_weightings, sus_i)
     stand_eff = expand_series(1-n.df(c).standing_loss, sns).T.pow(eh)
-    dispatch_eff = expand_series(n.df(c).efficiency_dispatch, sns).T.mul(eh)
-    store_eff = expand_series(n.df(c).efficiency_store, sns).T.mul(eh)
+    dispatch_eff = expand_series(n.df(c).efficiency_dispatch, sns).T
+    store_eff = expand_series(n.df(c).efficiency_store, sns).T
 
     soc = pnl.state_of_charge
 
-    store = store_eff * pnl.p_store#.clip(upper=0)
-    dispatch = 1/dispatch_eff * pnl.p_dispatch#(lower=0)
+    store = store_eff * eh * pnl.p_store#.clip(upper=0)
+    dispatch = 1/dispatch_eff * eh * pnl.p_dispatch#(lower=0)
     inflow = pypsa.descriptors.get_switchable_as_dense(n, c, 'inflow') * eh
     spill = eh[pnl.spill.columns] * pnl.spill
     start = soc.iloc[-1].where(sus.cyclic_state_of_charge,
