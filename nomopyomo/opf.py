@@ -487,18 +487,22 @@ def assign_solution(n, sns, variables_sol, constraints_dual,
     #load
     n.loads_t.p = n.loads_t.p_set
 
-    #injection
-    ca = [('Generator', 'p', ), ('Store', 'p'), ('StorageUnit', 'p'), ('Load', 'p')]
+    #injection, why does it include injection in hvdc 'network'
+    ca = [('Generator', 'p', 'bus' ), ('Store', 'p', 'bus'),
+          ('Load', 'p', 'bus'), ('StorageUnit', 'p', 'bus'),
+          ('Link', 'p0', 'bus0'), ('Link', 'p1', 'bus1')
+          ]
+    sign = lambda c: n.df(c).sign if 'sign' in n.df(c) else -1 #sign for 'Link'
     n.buses_t.p = pd.concat(
-                    [n.pnl(c)[attr].mul(n.df(c).sign).rename(columns=n.df(c).bus)
-                     for c, attr in ca], axis=1).groupby(level=0, axis=1).sum()
+            [n.pnl(c)[attr].mul(sign(c)).rename(columns=n.df(c)[group])
+             for c, attr, group in ca], axis=1).groupby(level=0, axis=1).sum()
 
 
 def lopf(n, snapshots=None, solver_name="cbc",
          solver_logfile=None, skip_pre=False,
-         extra_functionality=None,extra_postprocessing=None,
+         extra_functionality=None, extra_postprocessing=None,
          formulation="kirchhoff",
-         solver_options={},keep_files=False):
+         solver_options={}, keep_files=False):
     """
     Linear optimal power flow for a group of snapshots.
 
@@ -540,7 +544,7 @@ def lopf(n, snapshots=None, solver_name="cbc",
     -------
     None
     """
-    supported_solvers = ["cbc","gurobi"]
+    supported_solvers = ["cbc", "gurobi"]
     if solver_name not in supported_solvers:
         raise NotImplementedError(f"Solver {solver_name} not in "
                                   f"supported solvers: {supported_solvers}")
@@ -575,8 +579,8 @@ def lopf(n, snapshots=None, solver_name="cbc",
         return status,termination_condition
 
     gc.collect()
-    assign_solution(n, snapshots, variables_sol,
-                    constraints_dual, extra_postprocessing)
+    assign_solution(n, snapshots, variables_sol, constraints_dual,
+                    extra_postprocessing)
     gc.collect()
 
     return status,termination_condition

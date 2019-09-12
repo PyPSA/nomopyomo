@@ -56,12 +56,13 @@ def check_nodal_balance_constraint(n, tol=1e-3):
     """
     Helper function to double check whether network flow is balanced
     """
-    injection_refs = [('Line', 'p0', 'bus0'), ('Line', 'p1', 'bus1'),
-                      ('Link', 'p0', 'bus0'), ('Link', 'p1', 'bus1'),
-                      ('Transformer', 'p0', 'bus0'), ('Transformer', 'p1', 'bus1')]
-    network_injection = pd.concat([n.pnl(c)[attr].rename(columns=n.df(c)[buscol])
-                                 for c, attr, buscol in injection_refs], axis=1)\
-                          .groupby(level=0, axis=1).sum()
+#    injection_refs = [('Line', '0'), ('Line', 'p1', 'bus1'),
+#                      ('Transformer', 'p0', 'bus0'), ('Transformer', 'p1', 'bus1')]
+
+    network_injection = pd.concat(
+            [n.pnl(c)[f'p{inout}'].rename(columns=n.df(c)[f'bus{inout}'])
+            for inout in (0, 1) for c in ('Line', 'Transformer')], axis=1)\
+            .groupby(level=0, axis=1).sum()
     assert (n.buses_t.p - network_injection).abs().max().max() < tol
 
 def check_nominal_bounds(n, tol=1e-3):

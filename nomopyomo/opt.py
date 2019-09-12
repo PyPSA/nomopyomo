@@ -29,10 +29,9 @@ def reset_counter():
 
 def write_bound(n, lower, upper, axes=None):
     """
-    Writer function for writing out mutliple variables to the corresponding
-    bounds file. If lower and upper are floats it demands to give pass axes,
-    a tuple of (index, columns) or (index), for creating the variable of same
-    upper and lower bounds.
+    Writer function for writing out mutliple variables at a time. If lower and
+    upper are floats it demands to give pass axes, a tuple of (index, columns)
+    or (index), for creating the variable of same upper and lower bounds.
     Return a series or frame with variable references.
     """
     if axes is None:
@@ -145,7 +144,7 @@ def numerical_to_string(val, append_space=True):
     return charappend(s, ' ') if append_space else s
 
 
-#weigh faster than adding string
+#weigh faster than adding string using '+'
 def charappend(df, char):
     """
     Fast way to append a char or string to a large pd.DataFrame.
@@ -170,7 +169,19 @@ def charprepend(df, char):
     d[:] = char + d.values
     return d
 
+def join_entries(df):
+    """
+    Helper function to join arrays, series or frames of stings together.
+    """
+    if isinstance(df, np.ndarray):
+        return '\n'.join(df.flatten())
+    return '\n'.join(df.values.flatten())
+
 def expand_series(ser, columns):
+    """
+    Helper function to fastly expand a series to a dataframe with according
+    column axis and every single column being the equal to the given series.
+    """
     return ser.to_frame(columns[0]).reindex(columns=columns, method='ffill')
 
 # =============================================================================
