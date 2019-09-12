@@ -432,6 +432,8 @@ def read_cbc(network,sol_filename,keep_files):
         termination_condition = "other"
 
     if termination_condition != "optimal":
+        if not keep_files:
+            os.system("rm "+ sol_filename)
         return status, termination_condition, None, None
 
     sol = pd.read_csv(sol_filename,header=None,skiprows=1,sep=r"\s+")
