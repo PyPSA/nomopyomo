@@ -20,7 +20,8 @@ from .opt import (get_as_dense, get_bounds_pu, get_extendable_i,
                   get_non_extendable_i, write_bound, write_constraint,
                   numerical_to_string, set_conref, set_varref,
                   df_var, df_con, pnl_var, pnl_con, lookup, prefix,
-                  var_ref_suffix, sumstr, reset_counter, expand_series)
+                  var_ref_suffix, sumstr, reset_counter, expand_series,
+                  join_entries)
 
 from pypsa.pf import find_cycles as find_cycles, _as_snapshots
 
@@ -215,12 +216,6 @@ def define_store_constraints(n, sns):
 
 
 def define_global_constraints(n, sns):
-
-    def join_entries(df):
-        if isinstance(df, np.ndarray):
-            return '\n'.join(df.flatten())
-        return '\n'.join(df.values.flatten())
-
     glcs = n.global_constraints.query('type == "primary_energy"')
     for name, glc in glcs.iterrows():
         carattr = glc.carrier_attribute
