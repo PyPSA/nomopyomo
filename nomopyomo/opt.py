@@ -34,6 +34,7 @@ def write_bound(n, lower, upper, axes=None):
     or (index), for creating the variable of same upper and lower bounds.
     Return a series or frame with variable references.
     """
+    axes = [axes] if isinstance(axes, pd.Index) else axes
     if axes is None:
         axes, shape = broadcasted_axes(lower, upper)
     else:
@@ -56,6 +57,7 @@ def write_constraint(n, lhs, sense, rhs, axes=None):
     None but a tuple of (index, columns) or (index).
     Return a series or frame with constraint references.
     """
+    axes = [axes] if isinstance(axes, pd.Index) else axes
     if axes is None:
         axes, shape = broadcasted_axes(lhs, rhs)
     else:

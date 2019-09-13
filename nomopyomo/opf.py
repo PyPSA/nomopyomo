@@ -113,7 +113,6 @@ def define_nodal_balance_constraints(n, sns):
 def define_kirchhoff_constraints(n):
     n.calculate_dependent_values()
     n.determine_network_topology()
-    n.lines['carrier'] = n.lines.bus0.map(n.buses.carrier)
     weightings = n.lines.x_pu_eff.where(n.lines.carrier == 'AC', n.lines.r_pu_eff)
 
     def cycle_flow(ds):
@@ -239,10 +238,39 @@ def define_global_constraints(n, sns):
                         pnl_var(n, 'Store', 'e').loc[sns[-1], stores.index])
             lhs += join_entries(vals)
 
-        glcs.loc[name, 'lhs'] = lhs
-    constraints = write_constraint(n, glcs.lhs, glcs.sense.replace('==', '='),
-                                   glcs.constant.pipe(numerical_to_string))
-    set_conref(n, constraints, 'GlobalConstraint', 'mu', pnl=False)
+        rhs = glc.constant
+        con = write_constraint(n, lhs, glc.sense, rhs, axes=pd.Index([name]))
+        set_conref(n, con, 'GlobalConstraint', 'mu', pnl=False)
+
+    #expansion limits
+    glcs = n.global_constraints.query('type == "transmission_volume_expansion_limit"')
+    for name, glc in glcs.iterrows():
+        carattr = glc.carrier_attribute
+        carattr = list(carattr) if not isinstance(carattr, list) else carattr
+        lines_ext_i = n.lines.query('carrier in @carattr and s_nom_extendable').index
+        links_ext_i = n.links.query('carrier in @carattr and p_nom_extendable').index
+        lhs = join_entries(sumstr(n.lines.length[lines_ext_i],
+                                  df_var(n, 'Line', 's_nom')[lines_ext_i]))
+        lhs += join_entries(sumstr(n.links.length[links_ext_i],
+                                   df_var(n, 'Link', 'p_nom')[links_ext_i]))
+        rhs = glc.constant
+        con = write_constraint(n, lhs, glc.sense, rhs, axes=pd.Index([name]))
+        set_conref(n, con, 'GlobalConstraint', 'mu', pnl=False)
+
+    #expansion cost limits
+    glcs = n.global_constraints.query('type == "transmission_expansion_cost_limit"')
+    for name, glc in glcs.iterrows():
+        carattr = glc.carrier_attribute
+        carattr = list(carattr) if not isinstance(carattr, list) else carattr
+        lines_ext_i = n.lines.query('carrier in @carattr and s_nom_extendable').index
+        links_ext_i = n.links.query('carrier in @carattr and p_nom_extendable').index
+        lhs = join_entries(sumstr(n.lines.capital_cost[lines_ext_i],
+                                  df_var(n, 'Line', 's_nom')[lines_ext_i]))
+        lhs += join_entries(sumstr(n.links.capital_cost[links_ext_i],
+                                   df_var(n, 'Link', 'p_nom')[links_ext_i]))
+        rhs = glc.constant
+        con = write_constraint(n, lhs, glc.sense, rhs, axes=pd.Index([name]))
+        set_conref(n, con, 'GlobalConstraint', 'mu', pnl=False)
 
 
 def define_objective(n):
@@ -266,6 +294,9 @@ def define_objective(n):
 def prepare_lopf(n, snapshots=None, keep_files=False,
                  extra_functionality=None, working_mode=False):
     reset_counter()
+
+    #used in kirchhoff and globals
+    n.lines['carrier'] = n.lines.bus0.map(n.buses.carrier)
 
     snapshots = n.snapshots if snapshots is None else snapshots
     start = time.time()
@@ -421,8 +452,9 @@ def assign_solution(n, sns, variables_sol, constraints_dual,
     #solutions
     def map_solution(c, attr, pnl=True):
         if pnl:
-            values = (pnl_var(n, c, attr, pop=pop).stack()
-                      .map(variables_sol).unstack())
+            variables = pnl_var(n, c, attr, pop=pop)
+            if variables.empty: return
+            values = variables.stack().map(variables_sol).unstack()
             if c in n.passive_branch_components:
                 n.pnl(c)['p0'] = values
                 n.pnl(c)['p1'] = - values
