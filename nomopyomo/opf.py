@@ -245,12 +245,13 @@ def define_global_constraints(n, sns):
     #expansion limits
     glcs = n.global_constraints.query('type == "transmission_volume_expansion_limit"')
     for name, glc in glcs.iterrows():
-        carattr = glc.carrier_attribute
-        carattr = list(carattr) if not isinstance(carattr, list) else carattr
-        lines_ext_i = n.lines.query('carrier in @carattr and s_nom_extendable').index
-        links_ext_i = n.links.query('carrier in @carattr and p_nom_extendable').index
+        carattr = glc.carrier_attribute # is a string now because of iterrows
+        carattr = carattr if carattr.startswith('[') else '[' + carattr + ']'
+        lines_ext_i = n.lines.query(f'carrier in {carattr} and s_nom_extendable').index
+        links_ext_i = n.links.query(f'carrier in {carattr} and p_nom_extendable').index
         lhs = join_entries(sumstr(n.lines.length[lines_ext_i],
                                   df_var(n, 'Line', 's_nom')[lines_ext_i]))
+        lhs += '\n'
         lhs += join_entries(sumstr(n.links.length[links_ext_i],
                                    df_var(n, 'Link', 'p_nom')[links_ext_i]))
         rhs = glc.constant
@@ -260,12 +261,13 @@ def define_global_constraints(n, sns):
     #expansion cost limits
     glcs = n.global_constraints.query('type == "transmission_expansion_cost_limit"')
     for name, glc in glcs.iterrows():
-        carattr = glc.carrier_attribute
-        carattr = list(carattr) if not isinstance(carattr, list) else carattr
-        lines_ext_i = n.lines.query('carrier in @carattr and s_nom_extendable').index
-        links_ext_i = n.links.query('carrier in @carattr and p_nom_extendable').index
+        carattr = glc.carrier_attribute # is a string now because of iterrows
+        carattr = carattr if carattr.startswith('[') else '[' + carattr + ']'
+        lines_ext_i = n.lines.query(f'carrier in {carattr} and s_nom_extendable').index
+        links_ext_i = n.links.query(f'carrier in {carattr} and p_nom_extendable').index
         lhs = join_entries(sumstr(n.lines.capital_cost[lines_ext_i],
                                   df_var(n, 'Line', 's_nom')[lines_ext_i]))
+        lhs += '\n'
         lhs += join_entries(sumstr(n.links.capital_cost[links_ext_i],
                                    df_var(n, 'Link', 'p_nom')[links_ext_i]))
         rhs = glc.constant
