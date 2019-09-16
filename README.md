@@ -24,6 +24,11 @@ The final memory surge can probably be eliminated by managing the
 memory in pyomo's GUROBI_RUN.py script better (nomopyomo uses this
 script to run gurobi and return the values of dual variables).
 
+The fact that the gurobi solving time is shorter with nomopyomo than
+pyomo is not a general feature, but a random speed-up for this problem
+that comes from a different ordering of the variables and
+constraints. It will not hold for all problems.
+
 The results are identical (within the solver tolerances) and have been
 tested with a variety of standard PyPSA test cases.
 
@@ -66,8 +71,9 @@ nomopyomo.network_lopf(network, solver_name="cbc")
 
 Just like PyPSA's `network.lopf()` you can add `extra_functionality`
 and `extra_postprocessing` arguments, however the code must be
-modified from the PypSA case. For an example, see the [changes made
-for the model.energy code](https://github.com/PyPSA/whobs-server/commit/0908ed45d7758bb75f2f52ad028a170093e1a8a0).
+modified from the PyPSA case to use nomopyomo instead of pyomo. For an
+example, see the [changes made for the model.energy
+code](https://github.com/PyPSA/whobs-server/commit/0908ed45d7758bb75f2f52ad028a170093e1a8a0).
 
 
 
