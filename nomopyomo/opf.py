@@ -226,7 +226,7 @@ def define_global_constraints(n, sns):
             vals = scat(-sus.carrier.map(n.emissions),
                              pnl_var(n, 'StorageUnit', 'state_of_charge')
                                  .loc[sns[-1], sus.index])
-            lhs += join_entries(vals)
+            lhs = scat(lhs, join_entries(vals))
 
         #stores
         n.stores['carrier'] = n.stores.bus.map(n.buses.carrier)
@@ -236,7 +236,7 @@ def define_global_constraints(n, sns):
                     .pipe(numerical_to_string).pipe(join_entries))
             vals = scat(-sus.stores.map(n.emissions),
                         pnl_var(n, 'Store', 'e').loc[sns[-1], stores.index])
-            lhs += join_entries(vals)
+            lhs = scat(lhs, join_entries(vals))
 
         rhs = glc.constant
         con = write_constraint(n, lhs, glc.sense, rhs, axes=pd.Index([name]))
@@ -253,7 +253,7 @@ def define_global_constraints(n, sns):
                           df_var(n, 'Line', 's_nom')[lines_ext_i])
         linkvars = scat(n.links.length[links_ext_i],
                           df_var(n, 'Link', 'p_nom')[links_ext_i])
-        lhs = join_entries(linevars)+ '\n' + join_entries(linkvars)
+        lhs = scat(join_entries(linevars), join_entries(linkvars))
         sense = glc.sense
         rhs = glc.constant
         con = write_constraint(n, lhs, sense, rhs, axes=pd.Index([name]))
@@ -270,7 +270,7 @@ def define_global_constraints(n, sns):
                         df_var(n, 'Line', 's_nom')[lines_ext_i])
         linkvars = scat(n.links.capital_cost[links_ext_i],
                         df_var(n, 'Link', 'p_nom')[links_ext_i])
-        lhs = join_entries(linevars)+ '\n' + join_entries(linkvars)
+        lhs = scat(join_entries(linevars), join_entries(linkvars))
         sense = glc.sense
         rhs = glc.constant
         con = write_constraint(n, lhs, sense, rhs, axes=pd.Index([name]))

@@ -31,7 +31,7 @@ n.madd('Store', ['store'], bus='storebus', e_nom=2000,
        e_cyclic=True)
 
 #solve it with gurobi and validate
-nomopyomo.lopf(n, solver_name='gurobi', remove_references=True)
+nomopyomo.lopf(n, solver_name='gurobi', keep_files=True)
 
 nomopyomo.test.check_nominal_bounds(n)
 nomopyomo.test.check_nodal_balance_constraint(n)
