@@ -273,7 +273,7 @@ def define_global_constraints(n, sns):
         lhs = join_entries(linevars)+ '\n' + join_entries(linkvars)
         sense = glc.sense
         rhs = glc.constant
-        con = write_constraint(n, lhs, glc.sense, rhs, axes=pd.Index([name]))
+        con = write_constraint(n, lhs, sense, rhs, axes=pd.Index([name]))
         set_conref(n, con, 'GlobalConstraint', 'mu', pnl=False)
 
 
