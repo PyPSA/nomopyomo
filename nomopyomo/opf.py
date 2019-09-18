@@ -20,7 +20,7 @@ from .opt import (get_as_dense, get_bounds_pu, get_extendable_i,
                   get_non_extendable_i, write_bound, write_constraint,
                   numerical_to_string, set_conref, set_varref,
                   df_var, df_con, pnl_var, pnl_con, lookup, prefix,
-                  var_ref_suffix, sumstr, reset_counter, expand_series,
+                  var_ref_suffix, scat, reset_counter, expand_series,
                   join_entries, align_frame_function_getter)
 
 from pypsa.pf import find_cycles as find_cycles, _as_snapshots
@@ -67,15 +67,15 @@ def define_dispatch_for_extendable_constraints(n, sns, c, attr):
     min_pu, max_pu = get_bounds_pu(n, c, sns, ext_i, attr)
     operational_ext_v = pnl_var(n, c, attr)[ext_i]
     nominal_v = df_var(n, c, f'{prefix[c]}_nom')[ext_i]
-    wo_prefactor, *axes = sumstr(nominal_v, '\n-1.0 ', operational_ext_v,
-                                   return_axes=True)
+    wo_prefactor, *axes = scat(nominal_v, '\n-1.0 ', operational_ext_v,
+                               return_axes=True)
     rhs = '0'
 
-    lhs, *axes = sumstr(max_pu, wo_prefactor, return_axes=True)
+    lhs, *axes = scat(max_pu, wo_prefactor, return_axes=True)
     constraints = write_constraint(n, lhs, '>=', rhs, axes)
     set_conref(n, constraints, c, 'mu_upper')
 
-    lhs, *axes = sumstr(min_pu, wo_prefactor, return_axes=True)
+    lhs, *axes = scat(min_pu, wo_prefactor, return_axes=True)
     constraints = write_constraint(n, lhs, '<=', rhs, axes)
     set_conref(n, constraints, c, 'mu_lower')
 
@@ -86,7 +86,7 @@ def define_nodal_balance_constraints(n, sns):
         #additional sign only necessary for branches in reverse direction
         if 'sign' in n.df(c):
             sign = sign * n.df(c).sign
-        vals = sumstr(sign, pnl_var(n, c, attr), return_axes=True)
+        vals = scat(sign, pnl_var(n, c, attr), return_axes=True)
         return pd.DataFrame(*vals).rename(columns=n.df(c)[groupcol])
 
     # one might reduce this a bit by using n.branches and lookup
@@ -117,7 +117,7 @@ def define_kirchhoff_constraints(n):
 
     def cycle_flow(ds):
         ds = ds[lambda ds: ds!=0.].dropna()
-        vals = sumstr(ds, n.lines_t[f's{var_ref_suffix}'][ds.index], '\n')
+        vals = scat(ds, n.lines_t[f's{var_ref_suffix}'][ds.index], '\n')
         return vals.sum(1)
 
     constraints = []
@@ -164,7 +164,7 @@ def define_storage_unit_constraints(n, sns):
                  (eff_stand, prev_soc_cyclic, cyclic_i),
                  (eff_stand.loc[sns[1:]], soc.shift().loc[sns[1:]], noncyclic_i)]
     aligned_coeff_var = [align_frame(*args) for args in coeff_var]
-    lhs = sumstr(*aligned_coeff_var)
+    lhs = scat(*aligned_coeff_var)
 
     rhs = -get_as_dense(n, c, 'inflow').mul(eh)
     rhs.loc[sns[0], noncyclic_i] -= n.df(c).state_of_charge_initial[noncyclic_i]
@@ -196,7 +196,7 @@ def define_store_constraints(n, sns):
                  (eff_stand, previous_e_cyclic, cyclic_i),
                  (eff_stand.loc[sns[1:]], e.shift().loc[sns[1:]], noncyclic_i)]
     aligned_coeff_var = [align_frame(*args) for args in coeff_var]
-    lhs = sumstr(*aligned_coeff_var)
+    lhs = scat(*aligned_coeff_var)
 
     rhs = pd.DataFrame(0, sns, stores_i)
     rhs.loc[sns[0], noncyclic_i] -= n.df(c).e_initial[noncyclic_i]
@@ -214,7 +214,7 @@ def define_global_constraints(n, sns):
         gens = n.generators.query('carrier in @emissions.index')
         em_pu = gens.carrier.map(emissions)/gens.efficiency
         em_pu = n.snapshot_weightings.to_frame() @ em_pu.to_frame('weightings').T
-        vals = sumstr(em_pu, pnl_var(n, 'Generator', 'p')[gens.index])
+        vals = scat(em_pu, pnl_var(n, 'Generator', 'p')[gens.index])
         lhs = join_entries(vals)
 
         #storage units
@@ -223,7 +223,7 @@ def define_global_constraints(n, sns):
         if not sus.empty:
             lhs += (sus.carrier.map(emissions).mul(sus.state_of_charge_initial)
                     .pipe(numerical_to_string).pipe(join_entries))
-            vals = sumstr(-sus.carrier.map(n.emissions),
+            vals = scat(-sus.carrier.map(n.emissions),
                              pnl_var(n, 'StorageUnit', 'state_of_charge')
                                  .loc[sns[-1], sus.index])
             lhs += join_entries(vals)
@@ -234,7 +234,7 @@ def define_global_constraints(n, sns):
         if not stores.empty:
             lhs += (stores.carrier.map(emissions).mul(stores.e_initial)
                     .pipe(numerical_to_string).pipe(join_entries))
-            vals = sumstr(-sus.stores.map(n.emissions),
+            vals = scat(-sus.stores.map(n.emissions),
                         pnl_var(n, 'Store', 'e').loc[sns[-1], stores.index])
             lhs += join_entries(vals)
 
@@ -245,31 +245,33 @@ def define_global_constraints(n, sns):
     #expansion limits
     glcs = n.global_constraints.query('type == "transmission_volume_expansion_limit"')
     for name, glc in glcs.iterrows():
-        carattr = glc.carrier_attribute # is a string now because of iterrows
-        carattr = carattr if carattr.startswith('[') else '[' + carattr + ']'
-        lines_ext_i = n.lines.query(f'carrier in {carattr} and s_nom_extendable').index
-        links_ext_i = n.links.query(f'carrier in {carattr} and p_nom_extendable').index
-        lhs = join_entries(sumstr(n.lines.length[lines_ext_i],
-                                  df_var(n, 'Line', 's_nom')[lines_ext_i]))
-        lhs += '\n'
-        lhs += join_entries(sumstr(n.links.length[links_ext_i],
-                                   df_var(n, 'Link', 'p_nom')[links_ext_i]))
+        carattr = glcs.at[name, 'carrier_attribute']
+        carattr = carattr if isinstance(carattr, (list, tuple)) else [carattr]
+        lines_ext_i = n.lines.query(f'carrier in @carattr and s_nom_extendable').index
+        links_ext_i = n.links.query(f'carrier in @carattr and p_nom_extendable').index
+        linevars = scat(n.lines.length[lines_ext_i],
+                          df_var(n, 'Line', 's_nom')[lines_ext_i])
+        linkvars = scat(n.links.length[links_ext_i],
+                          df_var(n, 'Link', 'p_nom')[links_ext_i])
+        lhs = join_entries(linevars)+ '\n' + join_entries(linkvars)
+        sense = glc.sense
         rhs = glc.constant
-        con = write_constraint(n, lhs, glc.sense, rhs, axes=pd.Index([name]))
+        con = write_constraint(n, lhs, sense, rhs, axes=pd.Index([name]))
         set_conref(n, con, 'GlobalConstraint', 'mu', pnl=False)
 
     #expansion cost limits
     glcs = n.global_constraints.query('type == "transmission_expansion_cost_limit"')
     for name, glc in glcs.iterrows():
-        carattr = glc.carrier_attribute # is a string now because of iterrows
-        carattr = carattr if carattr.startswith('[') else '[' + carattr + ']'
-        lines_ext_i = n.lines.query(f'carrier in {carattr} and s_nom_extendable').index
-        links_ext_i = n.links.query(f'carrier in {carattr} and p_nom_extendable').index
-        lhs = join_entries(sumstr(n.lines.capital_cost[lines_ext_i],
-                                  df_var(n, 'Line', 's_nom')[lines_ext_i]))
-        lhs += '\n'
-        lhs += join_entries(sumstr(n.links.capital_cost[links_ext_i],
-                                   df_var(n, 'Link', 'p_nom')[links_ext_i]))
+        carattr = glcs.at[name, 'carrier_attribute']
+        carattr = carattr if isinstance(carattr, (list, tuple)) else [carattr]
+        lines_ext_i = n.lines.query(f'carrier in @carattr and s_nom_extendable').index
+        links_ext_i = n.links.query(f'carrier in @carattr and p_nom_extendable').index
+        linevars = scat(n.lines.capital_cost[lines_ext_i],
+                        df_var(n, 'Line', 's_nom')[lines_ext_i])
+        linkvars = scat(n.links.capital_cost[links_ext_i],
+                        df_var(n, 'Link', 'p_nom')[links_ext_i])
+        lhs = join_entries(linevars)+ '\n' + join_entries(linkvars)
+        sense = glc.sense
         rhs = glc.constant
         con = write_constraint(n, lhs, glc.sense, rhs, axes=pd.Index([name]))
         set_conref(n, con, 'GlobalConstraint', 'mu', pnl=False)
@@ -281,14 +283,14 @@ def define_objective(n):
                 .loc[:, lambda ds: (ds != 0).all()]
                 .mul(n.snapshot_weightings, axis=0))
         if cost.empty: continue
-        terms = sumstr(cost, pnl_var(n, c, attr)[cost.columns], '\n')
+        terms = scat(cost, pnl_var(n, c, attr)[cost.columns], '\n')
         for t in terms.flatten():
             n.objective_f.write(t)
     #investment
     for c, attr in prefix.items():
         cost = n.df(c)['capital_cost'][get_extendable_i(n, c)]
         if cost.empty: continue
-        terms = sumstr(cost, df_var(n, c, attr +'_nom')[cost.index], '\n')
+        terms = scat(cost, df_var(n, c, attr +'_nom')[cost.index], '\n')
         for t in terms.flatten():
             n.objective_f.write(t)
 
@@ -513,7 +515,7 @@ def assign_solution(n, sns, variables_sol, constraints_dual,
 def lopf(n, snapshots=None, solver_name="cbc",
          solver_logfile=None, skip_pre=False,
          extra_functionality=None, extra_postprocessing=None,
-         formulation="kirchhoff",
+         formulation="kirchhoff", remove_references=False,
          solver_options={}, keep_files=False):
     """
     Linear optimal power flow for a group of snapshots.
@@ -592,7 +594,7 @@ def lopf(n, snapshots=None, solver_name="cbc",
 
     gc.collect()
     assign_solution(n, snapshots, variables_sol, constraints_dual,
-                    extra_postprocessing)
+                    extra_postprocessing, remove_references=remove_references)
     gc.collect()
 
     return status,termination_condition

@@ -46,7 +46,7 @@ def write_bound(n, lower, upper, axes=None):
     variables = np.array([f'x{x}' for x in range(xCounter - length, xCounter)],
                           dtype=object).reshape(shape)
 
-    for s in sumstr(lower, ' <= ', variables, ' <= ', upper, '\n').flatten():
+    for s in scat(lower, ' <= ', variables, ' <= ', upper, '\n').flatten():
         n.bounds_f.write(s)
     return ser_or_frame(variables, *axes)
 
@@ -70,7 +70,7 @@ def write_constraint(n, lhs, sense, rhs, axes=None):
                             dtype=object).reshape(shape)
     if isinstance(sense, str):
         sense = '=' if sense == '==' else sense
-    for c in sumstr(cons, ':\n', lhs, '\n', sense, '\n', rhs, '\n\n').flatten():
+    for c in scat(cons, ':\n', lhs, '\n', sense, '\n', rhs, '\n\n').flatten():
         n.constraints_f.write(c)
     return ser_or_frame(cons, *axes)
 
@@ -103,13 +103,14 @@ def broadcasted_axes(*dfs):
     return axes, shape
 
 
-def sumstr(*vals, return_axes=False):
+def scat(*vals, return_axes=False):
     """
-    Fast way to join arrays, series, frames of strings together. Returns
+    Elementwise concatenation of strings in arrays, series, frames. Returns
     a np.ndarray of strings. If return_axes is set to True and a pd.Series or
-    pd.DataFrame was past the corresponding axes is past. For turning is into a
-    series or frame use pd.Series(*strinadd(..., return_axes=True)) or
-    pd.DataFrame(*sumstr(..., return_axes=True)) respectively.
+    pd.DataFrame was past the corresponding axes is returned additionaly. For
+    turning is into a series or frame use
+    pd.Series(*scat(..., return_axes=True)) or
+    pd.DataFrame(*scat(..., return_axes=True)) respectively.
 
     """
     axes, shape = broadcasted_axes(*vals)
@@ -253,7 +254,7 @@ def align_frame_function_getter(n, c, snapshots):
         if subset is not None:
             coefficient = coefficient[subset]
             df = df[subset]
-        return pd.DataFrame(*sumstr(coefficient, df, '\n', return_axes=True))\
+        return pd.DataFrame(*scat(coefficient, df, '\n', return_axes=True))\
                  .reindex(index=snapshots, columns=columns, fill_value='')
     return aligned_frame
 
