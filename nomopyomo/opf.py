@@ -82,9 +82,11 @@ def define_dispatch_for_extendable_constraints(n, sns, c, attr):
 
 def define_fixed_variariable_constraints(n, sns, c, attr):
     if attr + '_set' not in n.pnl(c): return
-    fix = n.pnl(c)[attr + '_set']
+    fix = n.pnl(c)[attr + '_set'].unstack().dropna()
     if fix.empty: return
-
+    lhs = scat(1, pnl_var(n, c, attr).unstack()[fix.index])
+    constraints = write_constraint(n, lhs, '=', fix).unstack().T
+    set_conref(n, constraints, c, f'mu_{attr}_set', True)
 
 
 def define_nodal_balance_constraints(n, sns):
@@ -251,8 +253,7 @@ def define_global_constraints(n, sns):
     #expansion limits
     glcs = n.global_constraints.query('type == "transmission_volume_expansion_limit"')
     for name, glc in glcs.iterrows():
-        carattr = glcs.at[name, 'carrier_attribute']
-        carattr = carattr if isinstance(carattr, (list, tuple)) else [carattr]
+        carattr = [c.strip() for c in glc.carrier_attribute.split(',')]
         lines_ext_i = n.lines.query(f'carrier in @carattr and s_nom_extendable').index
         links_ext_i = n.links.query(f'carrier in @carattr and p_nom_extendable').index
         linevars = scat(n.lines.length[lines_ext_i],
@@ -268,8 +269,7 @@ def define_global_constraints(n, sns):
     #expansion cost limits
     glcs = n.global_constraints.query('type == "transmission_expansion_cost_limit"')
     for name, glc in glcs.iterrows():
-        carattr = glcs.at[name, 'carrier_attribute']
-        carattr = carattr if isinstance(carattr, (list, tuple)) else [carattr]
+        carattr = [c.strip() for c in glc.carrier_attribute.split(',')]
         lines_ext_i = n.lines.query(f'carrier in @carattr and s_nom_extendable').index
         links_ext_i = n.links.query(f'carrier in @carattr and p_nom_extendable').index
         linevars = scat(n.lines.capital_cost[lines_ext_i],
@@ -339,6 +339,7 @@ def prepare_lopf(n, snapshots=None, keep_files=False,
         define_dispatch_for_non_extendable_variables(n, snapshots, c, attr)
         define_dispatch_for_extendable_variables(n, snapshots, c, attr)
         define_dispatch_for_extendable_constraints(n, snapshots, c, attr)
+        define_fixed_variariable_constraints(n, snapshots, c, attr)
 
     define_storage_unit_constraints(n, snapshots)
     define_store_constraints(n, snapshots)

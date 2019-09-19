@@ -14,13 +14,20 @@ network_path = str(Path(pypsa.__file__).parent.parent.joinpath('examples')
                 .joinpath('ac-dc-meshed').joinpath('ac-dc-data'))
 n = pypsa.Network(network_path)
 
+#fix one generator
+n.generators_t.p_set.loc[n.snapshots[:5], 'Norway Gas'] = 200
+n.generators_t.p_set.loc[n.snapshots[5:6], 'Manchester Gas'] = 200
 # add additional storage unit
 n.add('StorageUnit', 'su', bus='Manchester', marginal_cost=10, inflow=50,
       p_nom_extendable=True, capital_cost=10, p_nom=2000,
       efficiency_dispatch=0.5,
       cyclic_state_of_charge=True, state_of_charge_initial=1000)
 
-#n.add('StorageUnit', 'methanization', bus='Manchester', marginal_cost=10, inflow=50,
+#fix one soc timestep
+n.storage_units_t.state_of_charge_set.loc[n.snapshots[7], 'su'] = -100
+
+# add another storage unit
+#n.add('StorageUnit', 'methanization', bus='Manchester', marginal_cost=10,
 #      p_nom_extendable=True, capital_cost=50, p_nom=2000,
 #      efficiency_dispatch=0.5, carrier='gas',
 #      cyclic_state_of_charge=False, state_of_charge_initial=1000)
@@ -44,9 +51,9 @@ nomopyomo.test.check_storage_unit_contraints(n)
 nomopyomo.test.check_store_contraints(n)
 
 #solve it with cbc and validate
-#nomopyomo.lopf(n, solver_name='cbc')
-#
-#nomopyomo.test.check_nominal_bounds(n)
-#nomopyomo.test.check_nodal_balance_constraint(n)
-#nomopyomo.test.check_storage_unit_contraints(n)
-#nomopyomo.test.check_store_contraints(n)
+nomopyomo.lopf(n, solver_name='cbc')
+
+nomopyomo.test.check_nominal_bounds(n)
+nomopyomo.test.check_nodal_balance_constraint(n)
+nomopyomo.test.check_storage_unit_contraints(n)
+nomopyomo.test.check_store_contraints(n)
