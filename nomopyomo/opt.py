@@ -132,7 +132,7 @@ def numerical_to_string(val, append_space=True):
     if isinstance(val, str):
         return val
     if isinstance(val, (float, int)):
-        s = f' +{float(val)}' if val >= 0 else f'{float(val)}'
+        s = f' +{float(val)}' if val >= 0 else f' {float(val)}'
         return s + ' ' if append_space else s
     if isinstance(val, np.ndarray):
         if val.dtype == object:
@@ -282,8 +282,9 @@ def set_varref(n, variables, c, attr, pnl=True, spec=''):
     If pnl is True if stores the given frame of references in the component
     dict of time-depending quantities, e.g. network.generators_t .
     """
-    n.variables.loc[len(n.variables)] = [c, attr, pnl, spec]
-    _add_reference(n, variables, c, attr, var_ref_suffix, pnl=pnl)
+    if not variables.empty:
+        n.variables.loc[len(n.variables)] = [c, attr, pnl, spec]
+        _add_reference(n, variables, c, attr, var_ref_suffix, pnl=pnl)
 
 def set_conref(n, constraints, c, attr, pnl=True, spec=''):
     """
@@ -294,8 +295,9 @@ def set_conref(n, constraints, c, attr, pnl=True, spec=''):
     If pnl is True if stores the given frame of references in the component
     dict of time-depending quantities, e.g. network.generators_t .
     """
-    n.constraints.loc[len(n.constraints)] = [c, attr, pnl, spec]
-    _add_reference(n, constraints, c, attr, con_ref_suffix, pnl=pnl)
+    if not constraints.empty:
+        n.constraints.loc[len(n.constraints)] = [c, attr, pnl, spec]
+        _add_reference(n, constraints, c, attr, con_ref_suffix, pnl=pnl)
 
 def pnl_var(n, c, attr, pop=False):
     """

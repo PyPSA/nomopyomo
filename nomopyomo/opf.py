@@ -89,6 +89,56 @@ def define_fixed_variariable_constraints(n, sns, c, attr):
     set_conref(n, constraints, c, f'mu_{attr}_set', True)
 
 
+def define_ramp_limit_constraints(n, sns):
+    c = 'Generator'
+    rup_i = n.df(c).query('ramp_limit_up == ramp_limit_up').index
+    rdown_i = n.df(c).query('ramp_limit_down == ramp_limit_down').index
+    if rup_i.empty & rdown_i.empty:
+        return
+    #fix down
+    gens_i = rdown_i & get_non_extendable_i(n, c)
+    droplast_i = sns[:-1]
+    p_t1 = pnl_var(n, c, 'p').loc[droplast_i, gens_i]
+    p_t2 = pnl_var(n, c, 'p').shift(-1).loc[droplast_i, gens_i]
+    lhs = pd.DataFrame(*scat(1, p_t1, -1, p_t2, return_axes=True))
+    rhs = n.df(c).loc[gens_i].eval('ramp_limit_down * p_nom')
+    constraints = write_constraint(n, lhs, '<', rhs)
+    set_conref(n, constraints, c, 'mu_ramp_limit_down', spec='nonextendables')
+
+    #fix up
+    gens_i = rdown_i & get_non_extendable_i(n, c)
+    droplast_i = sns[:-1]
+    p_t1 = pnl_var(n, c, 'p').loc[droplast_i, gens_i]
+    p_t2 = pnl_var(n, c, 'p').shift(-1).loc[droplast_i, gens_i]
+    lhs = pd.DataFrame(*scat(1, p_t2, -1, p_t1, return_axes=True))
+    rhs = n.df(c).loc[gens_i].eval('ramp_limit_up * p_nom')
+    constraints = write_constraint(n, lhs, '<', rhs)
+    set_conref(n, constraints, c, 'mu_ramp_limit_up', spec='nonextendables')
+
+    #ext down
+    gens_i = rdown_i & get_extendable_i(n, c)
+    droplast_i = sns[:-1]
+    p_t1 = pnl_var(n, c, 'p').loc[droplast_i, gens_i]
+    p_t2 = pnl_var(n, c, 'p').shift(-1).loc[droplast_i, gens_i]
+    limit_pu = n.df(c)['ramp_limit_down'][gens_i]
+    p_nom = df_var(n, c, 'p_nom')[gens_i]
+    lhs = pd.DataFrame(*scat(1, p_t1, -1, p_t2, -limit_pu, p_nom, return_axes=True))
+    constraints = write_constraint(n, lhs, '<', 0)
+    set_conref(n, constraints, c, 'mu_ramp_limit_down', spec='extendables')
+
+    #ext down
+    gens_i = rdown_i & get_extendable_i(n, c)
+    droplast_i = sns[:-1]
+    p_t1 = pnl_var(n, c, 'p').loc[droplast_i, gens_i]
+    p_t2 = pnl_var(n, c, 'p').shift(-1).loc[droplast_i, gens_i]
+    limit_pu = n.df(c)['ramp_limit_up'][gens_i]
+    p_nom = df_var(n, c, 'p_nom')[gens_i]
+    lhs = pd.DataFrame(*scat(1, p_t2, -1, p_t1, -limit_pu, p_nom, return_axes=True))
+    constraints = write_constraint(n, lhs, '<', 0)
+    set_conref(n, constraints, c, 'mu_ramp_limit_up', spec='extendables')
+
+
+
 def define_nodal_balance_constraints(n, sns):
 
     def bus_injection(c, attr, groupcol='bus', sign=1):
@@ -341,12 +391,16 @@ def prepare_lopf(n, snapshots=None, keep_files=False,
         define_dispatch_for_extendable_constraints(n, snapshots, c, attr)
         define_fixed_variariable_constraints(n, snapshots, c, attr)
 
+    define_ramp_limit_constraints(n, snapshots)
     define_storage_unit_constraints(n, snapshots)
     define_store_constraints(n, snapshots)
     define_kirchhoff_constraints(n)
     define_nodal_balance_constraints(n, n.snapshots)
     define_global_constraints(n, n.snapshots)
     define_objective(n)
+
+    if working_mode:
+        return
 
     n.objective_f.close()
     n.constraints_f.close()
@@ -375,8 +429,6 @@ def run_cbc(filename, solution_fn, solver_logfile, solver_options, keep_files):
     #printingOptions is about what goes in solution file
     command = (f"cbc -printingOptions all -import {filename}"
                f" -stat=1 -solve {options} -solu {solution_fn}")
-#    logger.info("Running command:")
-#    logger.info(command)
     os.system(command)
 #    logfile = open(solver_logfile, 'w')
 #    status = subprocess.run(["cbc",command[4:]], bufsize=0, stdout=logfile)
@@ -411,7 +463,6 @@ def run_gurobi(n, filename, solution_fn, solver_logfile,
 def read_cbc(n, solution_fn, keep_files):
     f = open(solution_fn,"r")
     data = f.readline()
-#    logger.info(data)
     f.close()
 
     status = "ok"
