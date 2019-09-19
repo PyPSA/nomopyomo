@@ -132,17 +132,17 @@ def numerical_to_string(val, append_space=True):
     if isinstance(val, str):
         return val
     if isinstance(val, (float, int)):
-        s = f'+{float(val)}' if val >= 0 else f'{float(val)}'
+        s = f' +{float(val)}' if val >= 0 else f'{float(val)}'
         return s + ' ' if append_space else s
     if isinstance(val, np.ndarray):
         if val.dtype == object:
             return val
         signs = pd.Series(val) if val.ndim == 1 else pd.DataFrame(val)
-        signs = signs.pipe(np.sign).replace([0, 1, -1], ['+', '+', '-']).values
+        signs = signs.pipe(np.sign).replace([0, 1, -1], [' +', ' +', ' -']).values
     else:
         if val.values.dtype == object:
             return val
-        signs = val.pipe(np.sign).replace([0, 1, -1], ['+', '+', '-']).values
+        signs = val.pipe(np.sign).replace([0, 1, -1], [' +', ' +', ' -']).values
     s = charprepend(signs, abs(val).astype(str))
     return charappend(s, ' ') if append_space else s
 
@@ -185,7 +185,7 @@ def expand_series(ser, columns):
     Helper function to fastly expand a series to a dataframe with according
     column axis and every single column being the equal to the given series.
     """
-    return ser.to_frame(columns[0]).reindex(columns=columns, method='ffill')
+    return ser.to_frame(columns[0]).reindex(columns=columns).ffill(axis=1)
 
 # =============================================================================
 #  'getter' functions
@@ -273,7 +273,7 @@ def _add_reference(n, df, c, attr, suffix, pnl=True):
     else:
         n.df(c).loc[df.index, attr_name] = df
 
-def set_varref(n, variables, c, attr, pnl=True):
+def set_varref(n, variables, c, attr, pnl=True, spec=''):
     """
     Sets variable references to the network.
     If pnl is False it stores a series of variable names in the static
@@ -282,9 +282,10 @@ def set_varref(n, variables, c, attr, pnl=True):
     If pnl is True if stores the given frame of references in the component
     dict of time-depending quantities, e.g. network.generators_t .
     """
+    n.variables.loc[len(n.variables)] = [c, attr, pnl, spec]
     _add_reference(n, variables, c, attr, var_ref_suffix, pnl=pnl)
 
-def set_conref(n, constraints, c, attr, pnl=True):
+def set_conref(n, constraints, c, attr, pnl=True, spec=''):
     """
     Sets constraint references to the network.
     If pnl is False it stores a series of constraints names in the static
@@ -293,6 +294,7 @@ def set_conref(n, constraints, c, attr, pnl=True):
     If pnl is True if stores the given frame of references in the component
     dict of time-depending quantities, e.g. network.generators_t .
     """
+    n.constraints.loc[len(n.constraints)] = [c, attr, pnl, spec]
     _add_reference(n, constraints, c, attr, con_ref_suffix, pnl=pnl)
 
 def pnl_var(n, c, attr, pop=False):

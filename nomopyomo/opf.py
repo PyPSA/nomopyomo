@@ -47,7 +47,7 @@ def define_dispatch_for_extendable_variables(n, sns, c, attr):
     ext_i = get_extendable_i(n, c)
     if ext_i.empty: return
     variables = write_bound(n, -np.inf, np.inf, axes=[sns, ext_i])
-    set_varref(n, variables, c, attr, pnl=True)
+    set_varref(n, variables, c, attr, pnl=True, spec='extendables')
 
 
 def define_dispatch_for_non_extendable_variables(n, sns, c, attr):
@@ -58,7 +58,7 @@ def define_dispatch_for_non_extendable_variables(n, sns, c, attr):
     lower = min_pu.mul(nominal_fix)
     upper = max_pu.mul(nominal_fix)
     variables = write_bound(n, lower, upper)
-    set_varref(n, variables, c, attr, pnl=True)
+    set_varref(n, variables, c, attr, pnl=True, spec='nonextendables')
 
 
 def define_dispatch_for_extendable_constraints(n, sns, c, attr):
@@ -73,11 +73,18 @@ def define_dispatch_for_extendable_constraints(n, sns, c, attr):
 
     lhs, *axes = scat(max_pu, wo_prefactor, return_axes=True)
     constraints = write_constraint(n, lhs, '>=', rhs, axes)
-    set_conref(n, constraints, c, 'mu_upper')
+    set_conref(n, constraints, c, 'mu_upper', pnl=True, spec=attr)
 
     lhs, *axes = scat(min_pu, wo_prefactor, return_axes=True)
     constraints = write_constraint(n, lhs, '<=', rhs, axes)
-    set_conref(n, constraints, c, 'mu_lower')
+    set_conref(n, constraints, c, 'mu_lower', pnl=True, spec=attr)
+
+
+def define_fixed_variariable_constraints(n, sns, c, attr):
+    if attr + '_set' not in n.pnl(c): return
+    fix = n.pnl(c)[attr + '_set']
+    if fix.empty: return
+
 
 
 def define_nodal_balance_constraints(n, sns):
@@ -216,31 +223,30 @@ def define_global_constraints(n, sns):
         em_pu = n.snapshot_weightings.to_frame() @ em_pu.to_frame('weightings').T
         vals = scat(em_pu, pnl_var(n, 'Generator', 'p')[gens.index])
         lhs = join_entries(vals)
+        rhs = glc.constant
 
         #storage units
         sus = n.storage_units.query('carrier in @emissions.index and '
                                     'not cyclic_state_of_charge')
+        sus_i = sus.index
         if not sus.empty:
-            lhs += (sus.carrier.map(emissions).mul(sus.state_of_charge_initial)
-                    .pipe(numerical_to_string).pipe(join_entries))
-            vals = scat(-sus.carrier.map(n.emissions),
-                             pnl_var(n, 'StorageUnit', 'state_of_charge')
-                                 .loc[sns[-1], sus.index])
+            vals = scat(-sus.carrier.map(emissions),
+                        pnl_var(n, 'StorageUnit', 'state_of_charge').loc[sns[-1], sus_i])
             lhs = scat(lhs, join_entries(vals))
+            rhs -= sus.carrier.map(emissions) @ sus.state_of_charge_initial
 
         #stores
         n.stores['carrier'] = n.stores.bus.map(n.buses.carrier)
         stores = n.stores.query('carrier in @emissions.index and not e_cyclic')
         if not stores.empty:
-            lhs += (stores.carrier.map(emissions).mul(stores.e_initial)
-                    .pipe(numerical_to_string).pipe(join_entries))
-            vals = scat(-sus.stores.map(n.emissions),
+            vals = scat(-stores.carrier.map(n.emissions),
                         pnl_var(n, 'Store', 'e').loc[sns[-1], stores.index])
             lhs = scat(lhs, join_entries(vals))
+            rhs -= stores.carrier.map(emissions) @ stores.state_of_charge_initial
 
-        rhs = glc.constant
+
         con = write_constraint(n, lhs, glc.sense, rhs, axes=pd.Index([name]))
-        set_conref(n, con, 'GlobalConstraint', 'mu', pnl=False)
+        set_conref(n, con, 'GlobalConstraint', 'mu', False, name)
 
     #expansion limits
     glcs = n.global_constraints.query('type == "transmission_volume_expansion_limit"')
@@ -257,7 +263,7 @@ def define_global_constraints(n, sns):
         sense = glc.sense
         rhs = glc.constant
         con = write_constraint(n, lhs, sense, rhs, axes=pd.Index([name]))
-        set_conref(n, con, 'GlobalConstraint', 'mu', pnl=False)
+        set_conref(n, con, 'GlobalConstraint', 'mu', False, name)
 
     #expansion cost limits
     glcs = n.global_constraints.query('type == "transmission_expansion_cost_limit"')
@@ -274,7 +280,7 @@ def define_global_constraints(n, sns):
         sense = glc.sense
         rhs = glc.constant
         con = write_constraint(n, lhs, sense, rhs, axes=pd.Index([name]))
-        set_conref(n, con, 'GlobalConstraint', 'mu', pnl=False)
+        set_conref(n, con, 'GlobalConstraint', 'mu', False, name)
 
 
 def define_objective(n):
@@ -301,6 +307,10 @@ def prepare_lopf(n, snapshots=None, keep_files=False,
 
     #used in kirchhoff and globals
     n.lines['carrier'] = n.lines.bus0.map(n.buses.carrier)
+
+    cols = ['component', 'name', 'pnl', 'specification']
+    n.variables = pd.DataFrame(columns=cols)
+    n.constraints = pd.DataFrame(columns=cols)
 
     snapshots = n.snapshots if snapshots is None else snapshots
     start = time.time()
@@ -451,10 +461,9 @@ def read_gurobi(n, solution_fn, keep_files):
 
 def assign_solution(n, sns, variables_sol, constraints_dual,
                     extra_postprocessing, remove_references=True):
-    non_empty_components = [c for c in prefix.index if not n.df(c).empty]
     pop = remove_references
     #solutions
-    def map_solution(c, attr, pnl=True):
+    def map_solution(c, attr, pnl):
         if pnl:
             variables = pnl_var(n, c, attr, pop=pop)
             if variables.empty: return
@@ -473,30 +482,23 @@ def assign_solution(n, sns, variables_sol, constraints_dual,
         else:
             n.df(c)[attr+'_opt'] = n.df(c)[attr]
 
-    for c, attr in lookup.query('nominal').loc[non_empty_components].index:
-        map_solution(c, attr, pnl=False)
-    for c, attr in lookup.query('not nominal').loc[non_empty_components].index:
-        map_solution(c, attr, pnl=True)
+    for c, attr, pnl in n.variables.iloc[:, :-1].drop_duplicates().values:
+        map_solution(c, attr, pnl)
 
-    c = 'StorageUnit'
-    if c in non_empty_components:
+    if not n.df('StorageUnit').empty:
+        c = 'StorageUnit'
         n.pnl(c)['p'] = n.pnl(c)['p_dispatch'] - n.pnl(c)['p_store']
 
     #duals
-    def map_dual(c, attr, name=None, pnl=True):
-        if name is None: name = attr
+    def map_dual(c, attr, pnl):
         if pnl:
-            n.pnl(c)[name] = (pnl_con(n, c, attr, pop=pop).stack()
+            n.pnl(c)[attr] = (pnl_con(n, c, attr, pop=pop).stack()
                                       .map(-constraints_dual).unstack())
         else:
-            n.df(c)[name] = df_con(n, c, attr, pop=pop).map(-constraints_dual)
+            n.df(c)[attr] = df_con(n, c, attr, pop=pop).map(-constraints_dual)
 
-    map_dual('Bus', 'nodal_balance', 'marginal_price')
-    map_dual('GlobalConstraint', 'mu', pnl=False)
-    for c in non_empty_components:
-        if not get_extendable_i(n, c).empty:
-            map_dual(c, 'mu_upper')
-            map_dual(c, 'mu_lower')
+    for c, attr, pnl in n.constraints.iloc[:, :-1].drop_duplicates().values:
+        map_dual(c, attr, pnl)
 
     #load
     n.loads_t.p = n.loads_t.p_set
@@ -504,8 +506,7 @@ def assign_solution(n, sns, variables_sol, constraints_dual,
     #injection, why does it include injection in hvdc 'network'
     ca = [('Generator', 'p', 'bus' ), ('Store', 'p', 'bus'),
           ('Load', 'p', 'bus'), ('StorageUnit', 'p', 'bus'),
-          ('Link', 'p0', 'bus0'), ('Link', 'p1', 'bus1')
-          ]
+          ('Link', 'p0', 'bus0'), ('Link', 'p1', 'bus1')]
     sign = lambda c: n.df(c).sign if 'sign' in n.df(c) else -1 #sign for 'Link'
     n.buses_t.p = pd.concat(
             [n.pnl(c)[attr].mul(sign(c)).rename(columns=n.df(c)[group])
@@ -515,7 +516,7 @@ def assign_solution(n, sns, variables_sol, constraints_dual,
 def lopf(n, snapshots=None, solver_name="cbc",
          solver_logfile=None, skip_pre=False,
          extra_functionality=None, extra_postprocessing=None,
-         formulation="kirchhoff", remove_references=False,
+         formulation="kirchhoff", remove_references=True,
          solver_options={}, keep_files=False):
     """
     Linear optimal power flow for a group of snapshots.
