@@ -17,7 +17,7 @@ n = pypsa.Network(network_path)
 #set one generator to non-exdendable
 n.generators.loc[n.generators.carrier == 'gas', 'ramp_limit_down'] = 0.005
 n.generators.loc[n.generators.carrier == 'gas', 'ramp_limit_up'] = 0.005
-#n.generators.loc[n.generators.carrier == 'gas', 'p_nom_extendable'] = False
+n.generators.loc[n.generators.carrier == 'gas', 'p_nom_extendable'] = False
 
 #fix one generator
 #n.generators_t.p_set.loc[n.snapshots[:5], 'Norway Gas'] = 200

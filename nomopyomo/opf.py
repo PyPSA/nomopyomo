@@ -95,45 +95,38 @@ def define_ramp_limit_constraints(n, sns):
     rdown_i = n.df(c).query('ramp_limit_down == ramp_limit_down').index
     if rup_i.empty & rdown_i.empty:
         return
+    p_t1 = pnl_var(n, c, 'p').loc[sns[:-1]]
+    p_t2 = pnl_var(n, c, 'p').shift(-1).loc[sns[:-1]]
+
     #fix down
     gens_i = rdown_i & get_non_extendable_i(n, c)
-    droplast_i = sns[:-1]
-    p_t1 = pnl_var(n, c, 'p').loc[droplast_i, gens_i]
-    p_t2 = pnl_var(n, c, 'p').shift(-1).loc[droplast_i, gens_i]
-    lhs = pd.DataFrame(*scat(1, p_t1, -1, p_t2, return_axes=True))
+    lhs = pd.DataFrame(*scat(1, p_t1[gens_i], -1, p_t2[gens_i], return_axes=True))
     rhs = n.df(c).loc[gens_i].eval('ramp_limit_down * p_nom')
     constraints = write_constraint(n, lhs, '<', rhs)
     set_conref(n, constraints, c, 'mu_ramp_limit_down', spec='nonextendables')
 
     #fix up
-    gens_i = rdown_i & get_non_extendable_i(n, c)
-    droplast_i = sns[:-1]
-    p_t1 = pnl_var(n, c, 'p').loc[droplast_i, gens_i]
-    p_t2 = pnl_var(n, c, 'p').shift(-1).loc[droplast_i, gens_i]
-    lhs = pd.DataFrame(*scat(1, p_t2, -1, p_t1, return_axes=True))
+    gens_i = rup_i & get_non_extendable_i(n, c)
+    lhs = pd.DataFrame(*scat(1, p_t2[gens_i], -1, p_t1[gens_i], return_axes=True))
     rhs = n.df(c).loc[gens_i].eval('ramp_limit_up * p_nom')
     constraints = write_constraint(n, lhs, '<', rhs)
     set_conref(n, constraints, c, 'mu_ramp_limit_up', spec='nonextendables')
 
     #ext down
     gens_i = rdown_i & get_extendable_i(n, c)
-    droplast_i = sns[:-1]
-    p_t1 = pnl_var(n, c, 'p').loc[droplast_i, gens_i]
-    p_t2 = pnl_var(n, c, 'p').shift(-1).loc[droplast_i, gens_i]
     limit_pu = n.df(c)['ramp_limit_down'][gens_i]
     p_nom = df_var(n, c, 'p_nom')[gens_i]
-    lhs = pd.DataFrame(*scat(1, p_t1, -1, p_t2, -limit_pu, p_nom, return_axes=True))
+    lhs = pd.DataFrame(*scat(1, p_t1[gens_i], -1, p_t2[gens_i],
+                             -limit_pu, p_nom, return_axes=True))
     constraints = write_constraint(n, lhs, '<', 0)
     set_conref(n, constraints, c, 'mu_ramp_limit_down', spec='extendables')
 
-    #ext down
-    gens_i = rdown_i & get_extendable_i(n, c)
-    droplast_i = sns[:-1]
-    p_t1 = pnl_var(n, c, 'p').loc[droplast_i, gens_i]
-    p_t2 = pnl_var(n, c, 'p').shift(-1).loc[droplast_i, gens_i]
+    #ext up
+    gens_i = rup_i & get_extendable_i(n, c)
     limit_pu = n.df(c)['ramp_limit_up'][gens_i]
     p_nom = df_var(n, c, 'p_nom')[gens_i]
-    lhs = pd.DataFrame(*scat(1, p_t2, -1, p_t1, -limit_pu, p_nom, return_axes=True))
+    lhs = pd.DataFrame(*scat(1, p_t2[gens_i], -1, p_t1[gens_i],
+                             -limit_pu, p_nom, return_axes=True))
     constraints = write_constraint(n, lhs, '<', 0)
     set_conref(n, constraints, c, 'mu_ramp_limit_up', spec='extendables')
 
