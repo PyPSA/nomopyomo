@@ -13,15 +13,17 @@ from pathlib import Path
 network_path = str(Path(pypsa.__file__).parent.parent.joinpath('examples')
                 .joinpath('ac-dc-meshed').joinpath('ac-dc-data'))
 n = pypsa.Network(network_path)
+n.links_t.p_set.drop(columns=n.links.index, inplace=True)
+# watch out! link has p_set in which leads to other results thatn in the normal lopf
 
 #set one generator to non-exdendable
 n.generators.loc[n.generators.carrier == 'gas', 'ramp_limit_down'] = 0.005
 n.generators.loc[n.generators.carrier == 'gas', 'ramp_limit_up'] = 0.005
-n.generators.loc[n.generators.carrier == 'gas', 'p_nom_extendable'] = False
+#n.generators.loc[n.generators.carrier == 'gas', 'p_nom_extendable'] = False
 
 #fix one generator
-#n.generators_t.p_set.loc[n.snapshots[:5], 'Norway Gas'] = 200
-#n.generators_t.p_set.loc[n.snapshots[8:], 'Manchester Gas'] = 200
+n.generators_t.p_set.loc[n.snapshots[:5], 'Norway Gas'] = 200
+n.generators_t.p_set.loc[n.snapshots[8:], 'Manchester Gas'] = 200
 # add additional storage unit
 #n.add('StorageUnit', 'su', bus='Manchester', marginal_cost=10, inflow=50,
 #      p_nom_extendable=True, capital_cost=10, p_nom=2000,
@@ -50,7 +52,7 @@ n.generators.loc[n.generators.carrier == 'gas', 'p_nom_extendable'] = False
 #nomopyomo.prepare_lopf(n, working_mode=True)
 
 #solve it with gurobi and validate
-nomopyomo.lopf(n, solver_name='gurobi', remove_references=True)
+nomopyomo.lopf(n, solver_name='gurobi', remove_references=False, keep_files=True)
 
 nomopyomo.test.check_nominal_bounds(n)
 nomopyomo.test.check_nodal_balance_constraint(n)
