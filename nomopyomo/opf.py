@@ -20,7 +20,7 @@ from .opt import (get_as_dense, get_bounds_pu, get_extendable_i,
                   get_non_extendable_i, write_bound, write_constraint,
                   numerical_to_string, set_conref, set_varref,
                   df_var, df_con, pnl_var, pnl_con, lookup, prefix,
-                  var_ref_suffix, scat, reset_counter, expand_series,
+                  scat, reset_counter, expand_series,
                   join_entries, align_frame_function_getter)
 
 from pypsa.pf import find_cycles as find_cycles, _as_snapshots
@@ -29,7 +29,7 @@ from pypsa.pf import find_cycles as find_cycles, _as_snapshots
 import pandas as pd
 import numpy as np
 
-import gc, string, random, time, pyomo, os
+import gc, string, random, time, os, gurobipy
 
 import logging
 logger = logging.getLogger(__name__)
@@ -431,27 +431,44 @@ def run_cbc(filename, solution_fn, solver_logfile, solver_options, keep_files):
     if not keep_files:
        os.system("rm "+ filename)
 
-def run_gurobi(n, filename, solution_fn, solver_logfile,
+
+def run_and_read_gurobi(n, filename, solution_fn, solver_logfile,
                solver_options, keep_files):
-
-    solver_options["logfile"] = solver_logfile
-    script = (
-       f'import sys \n'
-       'from gurobipy import * \n'
-       f'path = "{os.path.dirname(pyomo.__file__)}/solvers/plugins/solvers" \n'
-       'sys.path.append(path) \n'
-       'from GUROBI_RUN import * \n'
-       f'gurobi_run("{filename}",None,"{solution_fn}",None,{solver_options},["dual"],) \n'
-       'quit()')
-
-    script_fn = "/tmp/gurobi-{}.script".format(n.identifier)
-    with open(script_fn,"w") as fn:
-        fn.write(script)
-    os.system(f"gurobi.sh {script_fn}")
+    m = gurobipy.read(filename)
 
     if not keep_files:
         os.system("rm "+ filename)
-        os.system("rm "+ script_fn)
+
+    for key, value in solver_options.items():
+        m.setParam(key, value)
+    m.optimize()
+
+    Status = gurobipy.GRB.Status
+    statmap = {getattr(Status, s) : s.lower() for s in Status.__dir__()
+                                     if not s.startswith('_')}
+    status = statmap[m.status]
+    variables_sol = pd.Series({v.VarName: v.x for v in m.getVars()})
+    constraints_dual = pd.Series({c.ConstrName: c.Pi for c in m.getConstrs()})
+    termination_condition = status
+    del m
+    return status, termination_condition, variables_sol, constraints_dual
+
+#    solver_options["logfile"] = solver_logfile
+#    script = (
+#       f'import sys \n'
+#       'from gurobipy import * \n'
+#       f'path = "{os.path.dirname(pyomo.__file__)}/solvers/plugins/solvers" \n'
+#       'sys.path.append(path) \n'
+#       'from GUROBI_RUN import * \n'
+#       f'gurobi_run("{filename}",None,"{solution_fn}",None,{solver_options},["dual"],) \n'
+#       'quit()')
+#
+#    script_fn = "/tmp/gurobi-{}.script".format(n.identifier)
+#    with open(script_fn,"w") as fn:
+#        fn.write(script)
+#    os.system(f"gurobi.sh {script_fn}")
+
+#        os.system("rm "+ script_fn)
 
 
 def read_cbc(n, solution_fn, keep_files):
@@ -484,25 +501,25 @@ def read_cbc(n, solution_fn, keep_files):
     return status, termination_condition, variables_sol, constraints_dual
 
 
-def read_gurobi(n, solution_fn, keep_files):
-    f = open(solution_fn,"r")
-    lines = [f.readline().replace('\n', '') for i in range(23)]
-    f.close()
-
-    sol = pd.read_csv(solution_fn, header=None, skiprows=range(23),
-                      sep=' ', index_col=0, usecols=[1,3])[3]
-    variables_b = sol.index.str[0] == 'x'
-    variables_sol = sol[variables_b]
-    constraints_dual = sol[~variables_b]
-
-    if not keep_files:
-       os.system("rm "+ solution_fn)
-
-    status = lines[12].split(' ')[1]
-    termination_condition = lines[19].split(' ')[1]
-    n.objective = float(lines[21].split(' ')[1])
-
-    return status, termination_condition, variables_sol, constraints_dual
+#def read_gurobi(n, solution_fn, keep_files):
+#    f = open(solution_fn,"r")
+#    lines = [f.readline().replace('\n', '') for i in range(23)]
+#    f.close()
+#
+#    sol = pd.read_csv(solution_fn, header=None, skiprows=range(23),
+#                      sep=' ', index_col=0, usecols=[1,3])[3]
+#    variables_b = sol.index.str[0] == 'x'
+#    variables_sol = sol[variables_b]
+#    constraints_dual = sol[~variables_b]
+#
+#    if not keep_files:
+#       os.system("rm "+ solution_fn)
+#
+#    status = lines[12].split(' ')[1]
+#    termination_condition = lines[19].split(' ')[1]
+#    n.objective = float(lines[21].split(' ')[1])
+#
+#    return status, termination_condition, variables_sol, constraints_dual
 
 
 def assign_solution(n, sns, variables_sol, constraints_dual,
@@ -557,6 +574,21 @@ def assign_solution(n, sns, variables_sol, constraints_dual,
     n.buses_t.p = pd.concat(
             [n.pnl(c)[attr].mul(sign(c)).rename(columns=n.df(c)[group])
              for c, attr, group in ca], axis=1).groupby(level=0, axis=1).sum()
+
+    def v_ang_for_(sub):
+        sub.find_bus_controls()
+        buses_i = sub.buses_o
+        if len(buses_i) == 1: return
+        sub.calculate_B_H(skip_pre=True)
+        if len(sub.buses_i()) == 1: return
+        Z = pd.DataFrame(np.linalg.pinv((sub.B).todense()), buses_i, buses_i)
+        Z -= Z[sub.slack_bus]
+        return n.buses_t.p[buses_i] @ Z
+    n.buses_t.v_ang = (pd.concat(
+                       [v_ang_for_(sub) for sub in n.sub_networks.obj], axis=1)
+                      .reindex(columns=n.buses.index, fill_value=0))
+
+
 
 
 def lopf(n, snapshots=None, solver_name="cbc",
@@ -631,9 +663,9 @@ def lopf(n, snapshots=None, solver_name="cbc",
                 solver_options, keep_files=True)
         res = read_cbc(n, solution_fn, keep_files)
     elif solver_name == "gurobi":
-        run_gurobi(n, n.problem_fn, solution_fn, solver_logfile,
-                   solver_options, keep_files)
-        res = read_gurobi(n, solution_fn, keep_files)
+        res = run_and_read_gurobi(n, n.problem_fn, solution_fn, solver_logfile,
+                                  solver_options, keep_files)
+#        read_gurobi(n, solution_fn, keep_files)
     status, termination_condition, variables_sol, constraints_dual = res
 
     if termination_condition != "optimal":

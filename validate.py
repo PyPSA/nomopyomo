@@ -54,10 +54,10 @@ n.generators.loc['Manchester Wind', 'p_nom_set'] = 3000
 #       capital_cost=20, e_nom_max=5000, e_initial=100,
 #       e_cyclic=True)
 
-#nomopyomo.prepare_lopf(n, working_mode=True)
+#nomopyomo.prepare_lopf(n, working_mode=False)
 
 #solve it with gurobi and validate
-nomopyomo.lopf(n, solver_name='gurobi', remove_references=False, keep_files=True)
+nomopyomo.lopf(n, solver_name='gurobi', remove_references=True, keep_files=True)
 
 nomopyomo.test.check_nominal_bounds(n)
 nomopyomo.test.check_nodal_balance_constraint(n)
