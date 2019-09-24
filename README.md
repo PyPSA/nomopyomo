@@ -35,18 +35,26 @@ solvers cbc/clp and gurobi.
 
 It has been tested against the standard PyPSA examples.
 
-TODO:
+# Roadmap:
 
-- constant term in objective function
-- handle non-optimal solutions
-- calculate nodal imbalances
-- calculate voltage angles
-- implement glpk solver
-- logfile for cbc
+## Imitate pypsa lopf
 
-No planned support for StorageUnit (replace with Store and Links
-following [this
-example](https://pypsa.org/examples/replace-generator-storage-units-with-store.html)).
+
+- [x] include ramp limits
+- [x] include Storage Units
+- [x] calculate nodal imbalances
+- [ ] constant term in objective function
+- [ ] calculate voltage angles
+- [ ] implement glpk solver
+- [ ] logfile for cbc
+
+
+## additional features
+
+- [x] global constraints for transmission expansion volume/cost limit
+- [x] fix values via '_set' for arbitrary components (worked for state of charge only)
+- [ ] handle non-optimal solutions
+
 
 # Usage
 
@@ -55,7 +63,7 @@ The usage is similar to PyPSA's `network.lopf()`:
 ```python
 import nomopyomo
 
-nomopyomo.network_lopf(network, solver_name="cbc")
+nomopyomo.lopf(network, solver_name="cbc")
 ```
 
 # How it works
@@ -66,7 +74,7 @@ constraints to a .lp problem file. It is solved, then the result is
 read back in. nomopyomo stores very little in memory beyond the
 original pypsa.Network.
 
-The integer assignments are determined by an implicit ordering of the
+<!-- The integer assignments are determined by an implicit ordering of the
 variables and constraints. Within each group (shown below), the
 variables are indexed in order by several index sets. The start and
 finish integers for each group are stored in the pandas.DataFrames
@@ -100,7 +108,7 @@ The constraints are organised into the following groups:
 | Cycle | Kirchhoff Voltage Law for passive branches | cycles, snapshots |
 | Store | store state of charge consistency | network.stores.index, snapshots |
 | nodal_balance | energy conservation at each bus | network.buses.index, snapshots |
-| global_constraints | constraints on e.g. CO2 emissions | network.global_constraints.index |
+| global_constraints | constraints on e.g. CO2 emissions | network.global_constraints.index | -->
 
 # Licence
 

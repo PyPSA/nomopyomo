@@ -24,6 +24,11 @@ n.generators.loc[n.generators.carrier == 'gas', 'ramp_limit_up'] = 0.005
 #fix one generator
 n.generators_t.p_set.loc[n.snapshots[:5], 'Norway Gas'] = 200
 n.generators_t.p_set.loc[n.snapshots[8:], 'Manchester Gas'] = 200
+
+#fix generator capacity
+n.generators.loc['Manchester Wind', 'p_nom_set'] = 3000
+
+
 # add additional storage unit
 #n.add('StorageUnit', 'su', bus='Manchester', marginal_cost=10, inflow=50,
 #      p_nom_extendable=True, capital_cost=10, p_nom=2000,
