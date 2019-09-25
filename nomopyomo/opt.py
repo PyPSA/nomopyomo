@@ -7,7 +7,7 @@ Created on Sat Sep  7 17:38:10 2019
 """
 
 import pandas as pd
-import csv, os
+import os, gurobipy
 import numpy as np
 from pypsa.descriptors import get_switchable_as_dense as get_as_dense
 
@@ -350,3 +350,74 @@ def df_con(n, c, attr, pop=False):
     if pop:
         return n.df(c).pop(attr + con_ref_suffix)
     return n.df(c)[attr + con_ref_suffix]
+
+
+# =============================================================================
+# solvers
+# =============================================================================
+
+def run_and_read_cbc(problem_fn, solution_fn, solver_logfile,
+                     solver_options, keep_files):
+    options = "" #-dualsimplex -primalsimplex
+    #printingOptions is about what goes in solution file
+    command = (f"cbc -printingOptions all -import {problem_fn}"
+               f" -stat=1 -solve {options} -solu {solution_fn}")
+    os.system(command)
+    #logfile = open(solver_logfile, 'w')
+    #status = subprocess.run(["cbc",command[4:]], bufsize=0, stdout=logfile)
+    #logfile.close()
+
+    f = open(solution_fn,"r")
+    data = f.readline()
+    f.close()
+
+    status = "ok"
+    if data[:len("Optimal - objective value ")] == "Optimal - objective value ":
+        termination_condition = "optimal"
+        objective = float(data[len("Optimal - objective value "):])
+    elif "Infeasible" in data:
+        termination_condition = "infeasible"
+    else:
+        termination_condition = "other"
+
+    if termination_condition != "optimal":
+        return status, termination_condition, None, None
+
+    sol = pd.read_csv(solution_fn, header=None, skiprows=[0],
+                      sep=r'\s+', usecols=[1,2,3], index_col=0)
+    variables_b = sol.index.str[0] == 'x'
+    variables_sol = sol[variables_b][2]
+    constraints_dual = sol[~variables_b][3]
+
+    if not keep_files:
+       os.system("rm "+ problem_fn)
+       os.system("rm "+ solution_fn)
+
+    return (status, termination_condition, variables_sol,
+            constraints_dual, objective)
+
+
+def run_and_read_gurobi(problem_fn, solution_fn, solver_logfile,
+                        solver_options, keep_files):
+    m = gurobipy.read(problem_fn)
+
+    if not keep_files:
+        os.system("rm "+ problem_fn)
+
+    for key, value in solver_options.items():
+        m.setParam(key, value)
+    m.optimize()
+
+    Status = gurobipy.GRB.Status
+    statmap = {getattr(Status, s) : s.lower() for s in Status.__dir__()
+                                     if not s.startswith('_')}
+    status = statmap[m.status]
+    variables_sol = pd.Series({v.VarName: v.x for v in m.getVars()})
+    constraints_dual = pd.Series({c.ConstrName: c.Pi for c in m.getConstrs()})
+    termination_condition = status
+    objective = m.ObjVal
+    del m
+    return (status, termination_condition, variables_sol,
+            constraints_dual, objective)
+
+

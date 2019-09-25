@@ -21,7 +21,8 @@ from .opt import (get_as_dense, get_bounds_pu, get_extendable_i,
                   numerical_to_string, set_conref, set_varref,
                   df_var, df_con, pnl_var, pnl_con, lookup, prefix,
                   scat, reset_counter, expand_series,
-                  join_entries, align_frame_function_getter)
+                  join_entries, align_frame_function_getter, run_and_read_cbc,
+                  run_and_read_gurobi)
 
 from pypsa.pf import find_cycles as find_cycles, _as_snapshots
 
@@ -29,7 +30,7 @@ from pypsa.pf import find_cycles as find_cycles, _as_snapshots
 import pandas as pd
 import numpy as np
 
-import gc, string, random, time, os, gurobipy
+import gc, string, random, time, os
 
 import logging
 logger = logging.getLogger(__name__)
@@ -413,70 +414,8 @@ def prepare_lopf(n, snapshots=None, keep_files=False,
             os.system("rm "+ fn)
 
 # =============================================================================
-# solvers, solving, assigning
+# solving, assigning
 # =============================================================================
-
-def run_and_read_cbc(n, solution_fn, solver_logfile,
-                     solver_options, keep_files):
-    options = "" #-dualsimplex -primalsimplex
-    #printingOptions is about what goes in solution file
-    command = (f"cbc -printingOptions all -import {n.problem_fn}"
-               f" -stat=1 -solve {options} -solu {solution_fn}")
-    os.system(command)
-    #logfile = open(solver_logfile, 'w')
-    #status = subprocess.run(["cbc",command[4:]], bufsize=0, stdout=logfile)
-    #logfile.close()
-
-    f = open(solution_fn,"r")
-    data = f.readline()
-    f.close()
-
-    status = "ok"
-    if data[:len("Optimal - objective value ")] == "Optimal - objective value ":
-        termination_condition = "optimal"
-        n.objective = float(data[len("Optimal - objective value "):])
-    elif "Infeasible" in data:
-        termination_condition = "infeasible"
-    else:
-        termination_condition = "other"
-
-    if termination_condition != "optimal":
-        return status, termination_condition, None, None
-
-    sol = pd.read_csv(solution_fn, header=None, skiprows=[0],
-                      sep=r'\s+', usecols=[1,2,3], index_col=0)
-    variables_b = sol.index.str[0] == 'x'
-    variables_sol = sol[variables_b][2]
-    constraints_dual = sol[~variables_b][3]
-
-    if not keep_files:
-       os.system("rm "+ n.problem_fn)
-       os.system("rm "+ solution_fn)
-
-    return status, termination_condition, variables_sol, constraints_dual
-
-
-def run_and_read_gurobi(n, solution_fn, solver_logfile,
-                        solver_options, keep_files):
-    m = gurobipy.read(n.problem_fn)
-
-    if not keep_files:
-        os.system("rm "+ n.problem_fn)
-
-    for key, value in solver_options.items():
-        m.setParam(key, value)
-    m.optimize()
-
-    Status = gurobipy.GRB.Status
-    statmap = {getattr(Status, s) : s.lower() for s in Status.__dir__()
-                                     if not s.startswith('_')}
-    status = statmap[m.status]
-    variables_sol = pd.Series({v.VarName: v.x for v in m.getVars()})
-    constraints_dual = pd.Series({c.ConstrName: c.Pi for c in m.getConstrs()})
-    termination_condition = status
-    del m
-    return status, termination_condition, variables_sol, constraints_dual
-
 
 def assign_solution(n, sns, variables_sol, constraints_dual,
                     extra_postprocessing, remove_references=True):
@@ -619,17 +558,18 @@ def lopf(n, snapshots=None, solver_name="cbc",
     logger.info("Solve linear problem")
 
     if solver_name == "cbc":
-        res = run_and_read_cbc(n, solution_fn, solver_logfile,
+        res = run_and_read_cbc(n.problem_fn, solution_fn, solver_logfile,
                                solver_options, keep_files=True)
     elif solver_name == "gurobi":
-        res = run_and_read_gurobi(n, solution_fn, solver_logfile,
+        res = run_and_read_gurobi(n.problem_fn, solution_fn, solver_logfile,
                                   solver_options, keep_files)
-    status, termination_condition, variables_sol, constraints_dual = res
+    status, termination_condition, variables_sol, constraints_dual, obj = res
     del n.problem_fn
 
     if termination_condition != "optimal":
         return status,termination_condition
 
+    n.objective = obj
     gc.collect()
     assign_solution(n, snapshots, variables_sol, constraints_dual,
                     extra_postprocessing, remove_references=remove_references)
