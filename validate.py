@@ -65,9 +65,9 @@ nomopyomo.test.check_storage_unit_contraints(n)
 nomopyomo.test.check_store_contraints(n)
 
 #solve it with cbc and validate
-nomopyomo.lopf(n, solver_name='cbc')
-
-nomopyomo.test.check_nominal_bounds(n)
-nomopyomo.test.check_nodal_balance_constraint(n)
-nomopyomo.test.check_storage_unit_contraints(n)
-nomopyomo.test.check_store_contraints(n)
+#nomopyomo.lopf(n, solver_name='cbc')
+#
+#nomopyomo.test.check_nominal_bounds(n)
+#nomopyomo.test.check_nodal_balance_constraint(n)
+#nomopyomo.test.check_storage_unit_contraints(n)
+#nomopyomo.test.check_store_contraints(n)

@@ -7,9 +7,11 @@ Created on Sat Sep  7 17:38:10 2019
 """
 
 import pandas as pd
-import os, gurobipy
+import os, gurobipy, logging
 import numpy as np
 from pypsa.descriptors import get_switchable_as_dense as get_as_dense
+from pandas import IndexSlice as idx
+from .opf import logger
 
 lookup = pd.read_csv(os.path.dirname(__file__) + '/variables.csv',
                         index_col=['component', 'variable'])
@@ -283,7 +285,10 @@ def set_varref(n, variables, c, attr, pnl=True, spec=''):
     dict of time-depending quantities, e.g. network.generators_t .
     """
     if not variables.empty:
-        n.variables.loc[len(n.variables)] = [c, attr, pnl, spec]
+        if ((c, attr) in n.variables.index) and (spec != ''):
+            n.variables.at[idx[c, attr], 'specification'] += ', ' + spec
+        else:
+            n.variables.loc[idx[c, attr], :] = [pnl, spec]
         _add_reference(n, variables, c, attr, var_ref_suffix, pnl=pnl)
 
 def set_conref(n, constraints, c, attr, pnl=True, spec=''):
@@ -296,8 +301,34 @@ def set_conref(n, constraints, c, attr, pnl=True, spec=''):
     dict of time-depending quantities, e.g. network.generators_t .
     """
     if not constraints.empty:
-        n.constraints.loc[len(n.constraints)] = [c, attr, pnl, spec]
+        if ((c, attr) in n.constraints.index) and (spec != ''):
+            n.constraints.at[idx[c, attr], 'specification'] += ', ' + spec
+        else:
+            n.constraints.loc[idx[c, attr], :] = [pnl, spec]
         _add_reference(n, constraints, c, attr, con_ref_suffix, pnl=pnl)
+
+
+def get_var(n, c, attr, pop=False):
+    if n.variables.at[idx[c, attr], 'pnl']:
+        if pop:
+            return n.pnl(c).pop(attr + var_ref_suffix)
+        return n.pnl(c)[attr + var_ref_suffix]
+    else:
+        if pop:
+            return n.df(c).pop(attr + var_ref_suffix)
+        return n.df(c)[attr + var_ref_suffix]
+
+
+def get_con(n, c, attr, pop=False):
+    if n.constraints.at[idx[c, attr], 'pnl']:
+        if pop:
+            return n.pnl(c).pop(attr + con_ref_suffix)
+        return n.pnl(c)[attr + con_ref_suffix]
+    else:
+        if pop:
+            return n.df(c).pop(attr + con_ref_suffix)
+        return n.df(c)[attr + con_ref_suffix]
+
 
 def pnl_var(n, c, attr, pop=False):
     """
@@ -399,6 +430,8 @@ def run_and_read_cbc(problem_fn, solution_fn, solver_logfile,
 
 def run_and_read_gurobi(problem_fn, solution_fn, solver_logfile,
                         solver_options, keep_files):
+    # TODO: add solver_file as std output
+    logging.disable()
     m = gurobipy.read(problem_fn)
 
     if not keep_files:
@@ -407,11 +440,12 @@ def run_and_read_gurobi(problem_fn, solution_fn, solver_logfile,
     for key, value in solver_options.items():
         m.setParam(key, value)
     m.optimize()
+    logging.disable(1)
 
     Status = gurobipy.GRB.Status
-    statmap = {getattr(Status, s) : s.lower() for s in Status.__dir__()
-                                     if not s.startswith('_')}
-    status = statmap[m.status]
+    statusmap = {getattr(Status, s) : s.lower() for s in Status.__dir__()
+                                                if not s.startswith('_')}
+    status = statusmap[m.status]
     variables_sol = pd.Series({v.VarName: v.x for v in m.getVars()})
     constraints_dual = pd.Series({c.ConstrName: c.Pi for c in m.getConstrs()})
     termination_condition = status

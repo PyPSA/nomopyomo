@@ -132,8 +132,6 @@ def define_ramp_limit_constraints(n, sns):
     set_conref(n, constraints, c, 'mu_ramp_limit_down', spec='extendables')
 
 
-
-
 def define_nodal_balance_constraints(n, sns):
 
     def bus_injection(c, attr, groupcol='bus', sign=1):
@@ -276,7 +274,7 @@ def define_global_constraints(n, sns):
         sus_i = sus.index
         if not sus.empty:
             vals = scat(-sus.carrier.map(emissions),
-                        pnl_var(n, 'StorageUnit', 'state_of_charge').loc[sns[-1], sus_i])
+                pnl_var(n, 'StorageUnit', 'state_of_charge').loc[sns[-1], sus_i])
             lhs = scat(lhs, join_entries(vals))
             rhs -= sus.carrier.map(emissions) @ sus.state_of_charge_initial
 
@@ -294,11 +292,14 @@ def define_global_constraints(n, sns):
         set_conref(n, con, 'GlobalConstraint', 'mu', False, name)
 
     #expansion limits
-    glcs = n.global_constraints.query('type == "transmission_volume_expansion_limit"')
+    glcs = n.global_constraints.query('type == '
+                                      '"transmission_volume_expansion_limit"')
     for name, glc in glcs.iterrows():
         carattr = [c.strip() for c in glc.carrier_attribute.split(',')]
-        lines_ext_i = n.lines.query(f'carrier in @carattr and s_nom_extendable').index
-        links_ext_i = n.links.query(f'carrier in @carattr and p_nom_extendable').index
+        lines_ext_i = n.lines.query(f'carrier in @carattr '
+                                    'and s_nom_extendable').index
+        links_ext_i = n.links.query(f'carrier in @carattr '
+                                    'and p_nom_extendable').index
         linevars = scat(n.lines.length[lines_ext_i],
                           df_var(n, 'Line', 's_nom')[lines_ext_i])
         linkvars = scat(n.links.length[links_ext_i],
@@ -310,11 +311,14 @@ def define_global_constraints(n, sns):
         set_conref(n, con, 'GlobalConstraint', 'mu', False, name)
 
     #expansion cost limits
-    glcs = n.global_constraints.query('type == "transmission_expansion_cost_limit"')
+    glcs = n.global_constraints.query('type == '
+                                      '"transmission_expansion_cost_limit"')
     for name, glc in glcs.iterrows():
         carattr = [c.strip() for c in glc.carrier_attribute.split(',')]
-        lines_ext_i = n.lines.query(f'carrier in @carattr and s_nom_extendable').index
-        links_ext_i = n.links.query(f'carrier in @carattr and p_nom_extendable').index
+        lines_ext_i = n.lines.query(f'carrier in @carattr '
+                                    'and s_nom_extendable').index
+        links_ext_i = n.links.query(f'carrier in @carattr '
+                                    'and p_nom_extendable').index
         linevars = scat(n.lines.capital_cost[lines_ext_i],
                         df_var(n, 'Line', 's_nom')[lines_ext_i])
         linkvars = scat(n.links.capital_cost[links_ext_i],
@@ -352,8 +356,8 @@ def prepare_lopf(n, snapshots=None, keep_files=False,
     n.lines['carrier'] = n.lines.bus0.map(n.buses.carrier)
 
     cols = ['component', 'name', 'pnl', 'specification']
-    n.variables = pd.DataFrame(columns=cols)
-    n.constraints = pd.DataFrame(columns=cols)
+    n.variables = pd.DataFrame(columns=cols).set_index(cols[:2])
+    n.constraints = pd.DataFrame(columns=cols).set_index(cols[:2])
 
     snapshots = n.snapshots if snapshots is None else snapshots
     start = time.time()
@@ -413,9 +417,6 @@ def prepare_lopf(n, snapshots=None, keep_files=False,
         for fn in [objective_fn, constraints_fn, bounds_fn]:
             os.system("rm "+ fn)
 
-# =============================================================================
-# solving, assigning
-# =============================================================================
 
 def assign_solution(n, sns, variables_sol, constraints_dual,
                     extra_postprocessing, remove_references=True):
@@ -440,7 +441,7 @@ def assign_solution(n, sns, variables_sol, constraints_dual,
         else:
             n.df(c)[attr+'_opt'] = n.df(c)[attr]
 
-    for c, attr, pnl in n.variables.iloc[:, :-1].drop_duplicates().values:
+    for (c, attr), pnl in n.variables.pnl.items():
         map_solution(c, attr, pnl)
 
     if not n.df('StorageUnit').empty:
@@ -455,7 +456,7 @@ def assign_solution(n, sns, variables_sol, constraints_dual,
         else:
             n.df(c)[attr] = df_con(n, c, attr, pop=pop).map(-constraints_dual)
 
-    for c, attr, pnl in n.constraints.iloc[:, :-1].drop_duplicates().values:
+    for (c, attr), pnl in n.constraints.pnl.items():
         map_dual(c, attr, pnl)
 
     #load
