@@ -19,10 +19,9 @@ Pyomo. nomopyomo = no more Pyomo."""
 from .opt import (get_as_dense, get_bounds_pu, get_extendable_i,
                   get_non_extendable_i, write_bound, write_constraint,
                   numerical_to_string, set_conref, set_varref,
-                  get_con, get_var, lookup, nominals,
-                  scat, reset_counter, expand_series,
-                  join_entries, align_frame_function_getter, run_and_read_cbc,
-                  run_and_read_gurobi)
+                  get_con, get_var, lookup, nominals, scat, reset_counter,
+                  expand_series, join_entries, align_frame_function_getter,
+                  run_and_read_cbc, run_and_read_gurobi)
 
 from pypsa.pf import find_cycles as find_cycles, _as_snapshots
 
@@ -256,7 +255,7 @@ def define_store_constraints(n, sns):
     lhs = scat(*aligned_coeff_var)
 
     rhs = pd.DataFrame(0, sns, stores_i)
-    rhs.loc[sns[0], noncyclic_i] -= n.df(c).e_initial[noncyclic_i]
+    rhs.loc[sns[0], noncyclic_i] -= n.df(c)['e_initial'][noncyclic_i]
 
     constraints = write_constraint(n, lhs, '==', rhs)
     set_conref(n, constraints, c, 'soc')

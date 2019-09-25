@@ -56,6 +56,10 @@ It has been tested against the standard PyPSA examples.
 - [ ] handle non-optimal solutions
 
 
+## internal changes
+
+- [ ] restructure scat to linexpression (or LExpression), which take tuples of coeff and vars
+
 # Usage
 
 The usage is similar to PyPSA's `network.lopf()`:
