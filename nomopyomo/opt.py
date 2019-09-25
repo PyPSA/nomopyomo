@@ -11,12 +11,11 @@ import os, gurobipy, logging
 import numpy as np
 from pypsa.descriptors import get_switchable_as_dense as get_as_dense
 from pandas import IndexSlice as idx
-from .opf import logger
 
 lookup = pd.read_csv(os.path.dirname(__file__) + '/variables.csv',
                         index_col=['component', 'variable'])
-prefix = lookup.droplevel(1).prefix[lambda ds: ~ds.index.duplicated()]
-nominals = lookup.query('nominal')
+#prefix = lookup.droplevel(1).prefix[lambda ds: ~ds.index.duplicated()]
+nominals = lookup.query('nominal').reset_index(level='variable').variable
 
 # =============================================================================
 # writing functions
@@ -197,7 +196,7 @@ def get_extendable_i(n, c):
     Getter function. Get the index of extendable elements of a given component.
     """
     return n.df(c)[lambda ds:
-        ds[f'{prefix[c]}_nom_extendable']].index
+        ds[nominals[c] + '_extendable']].index
 
 def get_non_extendable_i(n, c):
     """
@@ -205,7 +204,7 @@ def get_non_extendable_i(n, c):
     component.
     """
     return n.df(c)[lambda ds:
-            ~ds[f'{prefix[c]}_nom_extendable']].index
+            ~ds[nominals[c] + '_extendable']].index
 
 def get_bounds_pu(n, c, sns, index=slice(None), attr=None):
     """
@@ -228,18 +227,21 @@ def get_bounds_pu(n, c, sns, index=slice(None), attr=None):
         attribute name for the bounds, e.g. "p", "s", "p_store"
 
     """
-    max_pu = get_as_dense(n, c, f'{prefix[c]}_max_pu', sns)
+    min_pu_str = nominals[c].replace('nom', 'min_pu')
+    max_pu_str = nominals[c].replace('nom', 'max_pu')
+
+    max_pu = get_as_dense(n, c, max_pu_str, sns)
     if c in n.passive_branch_components:
         min_pu = - max_pu
     elif c == 'StorageUnit':
         min_pu = pd.DataFrame(0, max_pu.index, max_pu.columns)
         if attr == 'p_store':
-            max_pu = - get_as_dense(n, c, f'{prefix[c]}_min_pu', sns)
+            max_pu = - get_as_dense(n, c, min_pu_str, sns)
         if attr == 'state_of_charge':
             max_pu = expand_series(n.df(c).max_hours, sns).T
-            min_pu = - max_pu
+            min_pu = pd.DataFrame(0, *max_pu.axes)
     else:
-        min_pu = get_as_dense(n, c, f'{prefix[c]}_min_pu', sns)
+        min_pu = get_as_dense(n, c, min_pu_str, sns)
     return min_pu[index], max_pu[index]
 
 
@@ -309,6 +311,24 @@ def set_conref(n, constraints, c, attr, pnl=True, spec=''):
 
 
 def get_var(n, c, attr, pop=False):
+    '''
+    Retrieves variable references for a given static or time-depending
+    attribute of a given component. The function looks into n.variables to
+    detect whether the variable is a time-dependent or static.
+
+    Parameters
+    ----------
+    n : pypsa.Network
+    c : str
+        component name to which the constraint belongs
+    attr: str
+        attribute name of the constraints
+
+    Example
+    -------
+    get_var(n, 'Generator', 'p')
+
+    '''
     if n.variables.at[idx[c, attr], 'pnl']:
         if pop:
             return n.pnl(c).pop(attr + var_ref_suffix)
@@ -320,6 +340,22 @@ def get_var(n, c, attr, pop=False):
 
 
 def get_con(n, c, attr, pop=False):
+    """
+    Retrieves constraint references for a given static or time-depending
+    attribute of a give component.
+
+    Parameters
+    ----------
+    n : pypsa.Network
+    c : str
+        component name to which the constraint belongs
+    attr: str
+        attribute name of the constraints
+
+    Example
+    -------
+    get_con(n, 'Generator', 'mu_upper')
+    """
     if n.constraints.at[idx[c, attr], 'pnl']:
         if pop:
             return n.pnl(c).pop(attr + con_ref_suffix)
@@ -328,59 +364,6 @@ def get_con(n, c, attr, pop=False):
         if pop:
             return n.df(c).pop(attr + con_ref_suffix)
         return n.df(c)[attr + con_ref_suffix]
-
-
-def pnl_var(n, c, attr, pop=False):
-    """
-    Retrieves variable references for a given time-depending attribute attr
-    of a give component c.
-
-    Example
-    -------
-    pnl_var(n, 'Generator', 'p')
-    """
-    if pop:
-        return n.pnl(c).pop(attr + var_ref_suffix)
-    return n.pnl(c)[attr + var_ref_suffix]
-
-def df_var(n, c, attr, pop=False):
-    """
-    Retrieves variable references for a given static attribute attr
-    of a give component c.
-
-    Example
-    -------
-    df_var(n, 'Line', 's_nom')
-    """
-    if pop:
-        return n.df(c).pop(attr + var_ref_suffix)
-    return n.df(c)[attr + var_ref_suffix]
-
-def pnl_con(n, c, attr, pop=False):
-    """
-    Retrieves constraint references for a given time-depending attribute attr
-    of a give component c.
-
-    Example
-    -------
-    pnl_con(n, 'Generator', 'mu_upper')
-    """
-    if pop:
-        return n.pnl(c).pop(attr + con_ref_suffix)
-    return n.pnl(c)[attr + con_ref_suffix]
-
-def df_con(n, c, attr, pop=False):
-    """
-    Retrieves contraint references for a given static attribute attr
-    of a give component c.
-
-    Example
-    -------
-    df_con(n, 'GlobalConstraint', 'mu')
-    """
-    if pop:
-        return n.df(c).pop(attr + con_ref_suffix)
-    return n.df(c)[attr + con_ref_suffix]
 
 
 # =============================================================================

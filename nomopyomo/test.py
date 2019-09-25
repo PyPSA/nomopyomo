@@ -8,7 +8,7 @@ Created on Wed Sep 11 11:56:34 2019
 
 import pypsa
 import pandas as pd
-from .opt import expand_series, prefix
+from .opt import expand_series, nominals
 
 
 def check_storage_unit_contraints(n, tol=1e-3):
@@ -66,10 +66,10 @@ def check_nodal_balance_constraint(n, tol=1e-3):
     assert (n.buses_t.p - network_injection).abs().max().max() < tol
 
 def check_nominal_bounds(n, tol=1e-3):
-    for c, attr in prefix.items():
-        dispatch_attr = 'p0' if c in ['Line', 'Transformer', 'Link'] else attr
+    for c, attr in nominals.items():
+        dispatch_attr = 'p0' if c in ['Line', 'Transformer', 'Link'] else attr[0]
         assert (n.pnl(c)[dispatch_attr].abs().max().add(-tol)
-                <= n.df(c)[attr + '_nom_opt']).all(), ('Test for nominal bounds'
+                <= n.df(c)[attr + '_opt']).all(), ('Test for nominal bounds'
                 f' for component {c} failed')
 
 

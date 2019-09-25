@@ -19,7 +19,7 @@ Pyomo. nomopyomo = no more Pyomo."""
 from .opt import (get_as_dense, get_bounds_pu, get_extendable_i,
                   get_non_extendable_i, write_bound, write_constraint,
                   numerical_to_string, set_conref, set_varref,
-                  df_var, df_con, pnl_var, pnl_con, lookup, prefix,
+                  get_con, get_var, lookup, nominals,
                   scat, reset_counter, expand_series,
                   join_entries, align_frame_function_getter, run_and_read_cbc,
                   run_and_read_gurobi)
@@ -35,13 +35,13 @@ import gc, string, random, time, os
 import logging
 logger = logging.getLogger(__name__)
 
-def define_nominal_for_extendable_variables(n, c):
+def define_nominal_for_extendable_variables(n, c, attr):
     ext_i = get_extendable_i(n, c)
     if ext_i.empty: return
-    lower = n.df(c)[f'{prefix[c]}_nom_min'][ext_i]
-    upper = n.df(c)[f'{prefix[c]}_nom_max'][ext_i]
+    lower = n.df(c)[attr+'_min'][ext_i]
+    upper = n.df(c)[attr+'_max'][ext_i]
     variables = write_bound(n, lower, upper)
-    set_varref(n, variables, c, f'{prefix[c]}_nom', pnl=False)
+    set_varref(n, variables, c, attr, pnl=False)
 
 
 def define_dispatch_for_extendable_variables(n, sns, c, attr):
@@ -54,7 +54,7 @@ def define_dispatch_for_extendable_variables(n, sns, c, attr):
 def define_dispatch_for_non_extendable_variables(n, sns, c, attr):
     fix_i = get_non_extendable_i(n, c)
     if fix_i.empty: return
-    nominal_fix = n.df(c)[f'{prefix[c]}_nom'][fix_i]
+    nominal_fix = n.df(c)[nominals.at[c]][fix_i]
     min_pu, max_pu = get_bounds_pu(n, c, sns, fix_i, attr)
     lower = min_pu.mul(nominal_fix)
     upper = max_pu.mul(nominal_fix)
@@ -66,8 +66,8 @@ def define_dispatch_for_extendable_constraints(n, sns, c, attr):
     ext_i = get_extendable_i(n, c)
     if ext_i.empty: return
     min_pu, max_pu = get_bounds_pu(n, c, sns, ext_i, attr)
-    operational_ext_v = pnl_var(n, c, attr)[ext_i]
-    nominal_v = df_var(n, c, f'{prefix[c]}_nom')[ext_i]
+    operational_ext_v = get_var(n, c, attr)[ext_i]
+    nominal_v = get_var(n, c, nominals.at[c])[ext_i]
     wo_prefactor, *axes = scat(nominal_v, '\n-1.0 ', operational_ext_v,
                                return_axes=True)
     rhs = '0'
@@ -81,13 +81,20 @@ def define_dispatch_for_extendable_constraints(n, sns, c, attr):
     set_conref(n, constraints, c, 'mu_lower', pnl=True, spec=attr)
 
 
-def define_fixed_variariable_constraints(n, sns, c, attr):
-    if attr + '_set' not in n.pnl(c): return
-    fix = n.pnl(c)[attr + '_set'].unstack().dropna()
-    if fix.empty: return
-    lhs = scat(1, pnl_var(n, c, attr).unstack()[fix.index])
-    constraints = write_constraint(n, lhs, '=', fix).unstack().T
-    set_conref(n, constraints, c, f'mu_{attr}_set', True)
+def define_fixed_variariable_constraints(n, sns, c, attr, pnl=True):
+    if pnl:
+        if attr + '_set' not in n.pnl(c): return
+        fix = n.pnl(c)[attr + '_set'].unstack().dropna()
+        if fix.empty: return
+        lhs = scat(1, get_var(n, c, attr).unstack()[fix.index])
+        constraints = write_constraint(n, lhs, '=', fix).unstack().T
+    else:
+        if attr + '_set' not in n.df(c): return
+        fix = n.df(c)[attr + '_set'].dropna()
+        if fix.empty: return
+        lhs = scat(1, get_var(n, c, attr)[fix.index])
+        constraints = write_constraint(n, lhs, '=', fix)
+    set_conref(n, constraints, c, f'mu_{attr}_set', pnl)
 
 
 def define_ramp_limit_constraints(n, sns):
@@ -96,8 +103,8 @@ def define_ramp_limit_constraints(n, sns):
     rdown_i = n.df(c).query('ramp_limit_down == ramp_limit_down').index
     if rup_i.empty & rdown_i.empty:
         return
-    p = pnl_var(n, c, 'p').loc[sns[1:]]
-    p_prev = pnl_var(n, c, 'p').shift(1).loc[sns[1:]]
+    p = get_var(n, c, 'p').loc[sns[1:]]
+    p_prev = get_var(n, c, 'p').shift(1).loc[sns[1:]]
 
     #fix up
     gens_i = rup_i & get_non_extendable_i(n, c)
@@ -109,7 +116,7 @@ def define_ramp_limit_constraints(n, sns):
     #ext up
     gens_i = rup_i & get_extendable_i(n, c)
     limit_pu = n.df(c)['ramp_limit_up'][gens_i]
-    p_nom = df_var(n, c, 'p_nom')[gens_i]
+    p_nom = get_var(n, c, 'p_nom')[gens_i]
     lhs = pd.DataFrame(*scat(1, p[gens_i], -1, p_prev[gens_i],
                              -limit_pu, p_nom, return_axes=True))
     constraints = write_constraint(n, lhs, '<=', 0)
@@ -125,7 +132,7 @@ def define_ramp_limit_constraints(n, sns):
     #ext down
     gens_i = rdown_i & get_extendable_i(n, c)
     limit_pu = n.df(c)['ramp_limit_down'][gens_i]
-    p_nom = df_var(n, c, 'p_nom')[gens_i]
+    p_nom = get_var(n, c, 'p_nom')[gens_i]
     lhs = pd.DataFrame(*scat(1, p[gens_i], -1, p_prev[gens_i],
                              limit_pu, p_nom, return_axes=True))
     constraints = write_constraint(n, lhs, '>=', 0)
@@ -138,7 +145,7 @@ def define_nodal_balance_constraints(n, sns):
         #additional sign only necessary for branches in reverse direction
         if 'sign' in n.df(c):
             sign = sign * n.df(c).sign
-        vals = scat(sign, pnl_var(n, c, attr), return_axes=True)
+        vals = scat(sign, get_var(n, c, attr), return_axes=True)
         return pd.DataFrame(*vals).rename(columns=n.df(c)[groupcol])
 
     # one might reduce this a bit by using n.branches and lookup
@@ -167,7 +174,7 @@ def define_kirchhoff_constraints(n):
 
     def cycle_flow(ds):
         ds = ds[lambda ds: ds!=0.].dropna()
-        vals = scat(ds, pnl_var(n, 'Line', 's')[ds.index], '\n')
+        vals = scat(ds, get_var(n, 'Line', 's')[ds.index], '\n')
         return vals.sum(1)
 
     constraints = []
@@ -201,16 +208,16 @@ def define_storage_unit_constraints(n, sns):
     eff_dispatch = expand_series(n.df(c).efficiency_dispatch, sns).T
     eff_store = expand_series(n.df(c).efficiency_store, sns).T
 
-    soc = pnl_var(n, c, 'state_of_charge')
+    soc = get_var(n, c, 'state_of_charge')
     cyclic_i = n.df(c).query('cyclic_state_of_charge').index
     noncyclic_i = n.df(c).query('~cyclic_state_of_charge').index
 
     prev_soc_cyclic = soc.shift().fillna(soc.loc[sns[-1]])
 
     coeff_var = [(-1, soc),
-                 (-1/eff_dispatch * eh, pnl_var(n, c, 'p_dispatch')),
-                 (-eh, pnl_var(n, c, 'spill'), spill.columns),
-                 (eff_store * eh, pnl_var(n, c, 'p_store')),
+                 (-1/eff_dispatch * eh, get_var(n, c, 'p_dispatch')),
+                 (-eh, get_var(n, c, 'spill'), spill.columns),
+                 (eff_store * eh, get_var(n, c, 'p_store')),
                  (eff_stand, prev_soc_cyclic, cyclic_i),
                  (eff_stand.loc[sns[1:]], soc.shift().loc[sns[1:]], noncyclic_i)]
     aligned_coeff_var = [align_frame(*args) for args in coeff_var]
@@ -235,13 +242,13 @@ def define_store_constraints(n, sns):
     eh = expand_series(n.snapshot_weightings, stores_i)  #elapsed hours
     eff_stand = expand_series(1-n.df(c).standing_loss, sns).T.pow(eh)
 
-    e = pnl_var(n, c, 'e')
+    e = get_var(n, c, 'e')
     cyclic_i = n.df(c).query('e_cyclic').index
     noncyclic_i = n.df(c).query('~e_cyclic').index
 
     previous_e_cyclic = e.shift().fillna(e.loc[sns[-1]])
 
-    coeff_var = [(-eh, pnl_var(n, c, 'p')),
+    coeff_var = [(-eh, get_var(n, c, 'p')),
                  (-1, e),
                  (eff_stand, previous_e_cyclic, cyclic_i),
                  (eff_stand.loc[sns[1:]], e.shift().loc[sns[1:]], noncyclic_i)]
@@ -264,7 +271,7 @@ def define_global_constraints(n, sns):
         gens = n.generators.query('carrier in @emissions.index')
         em_pu = gens.carrier.map(emissions)/gens.efficiency
         em_pu = n.snapshot_weightings.to_frame() @ em_pu.to_frame('weightings').T
-        vals = scat(em_pu, pnl_var(n, 'Generator', 'p')[gens.index])
+        vals = scat(em_pu, get_var(n, 'Generator', 'p')[gens.index])
         lhs = join_entries(vals)
         rhs = glc.constant
 
@@ -274,7 +281,7 @@ def define_global_constraints(n, sns):
         sus_i = sus.index
         if not sus.empty:
             vals = scat(-sus.carrier.map(emissions),
-                pnl_var(n, 'StorageUnit', 'state_of_charge').loc[sns[-1], sus_i])
+                get_var(n, 'StorageUnit', 'state_of_charge').loc[sns[-1], sus_i])
             lhs = scat(lhs, join_entries(vals))
             rhs -= sus.carrier.map(emissions) @ sus.state_of_charge_initial
 
@@ -283,7 +290,7 @@ def define_global_constraints(n, sns):
         stores = n.stores.query('carrier in @emissions.index and not e_cyclic')
         if not stores.empty:
             vals = scat(-stores.carrier.map(n.emissions),
-                        pnl_var(n, 'Store', 'e').loc[sns[-1], stores.index])
+                        get_var(n, 'Store', 'e').loc[sns[-1], stores.index])
             lhs = scat(lhs, join_entries(vals))
             rhs -= stores.carrier.map(emissions) @ stores.state_of_charge_initial
 
@@ -301,9 +308,9 @@ def define_global_constraints(n, sns):
         links_ext_i = n.links.query(f'carrier in @carattr '
                                     'and p_nom_extendable').index
         linevars = scat(n.lines.length[lines_ext_i],
-                          df_var(n, 'Line', 's_nom')[lines_ext_i])
+                          get_var(n, 'Line', 's_nom')[lines_ext_i])
         linkvars = scat(n.links.length[links_ext_i],
-                          df_var(n, 'Link', 'p_nom')[links_ext_i])
+                          get_var(n, 'Link', 'p_nom')[links_ext_i])
         lhs = scat(join_entries(linevars), join_entries(linkvars))
         sense = glc.sense
         rhs = glc.constant
@@ -320,9 +327,9 @@ def define_global_constraints(n, sns):
         links_ext_i = n.links.query(f'carrier in @carattr '
                                     'and p_nom_extendable').index
         linevars = scat(n.lines.capital_cost[lines_ext_i],
-                        df_var(n, 'Line', 's_nom')[lines_ext_i])
+                        get_var(n, 'Line', 's_nom')[lines_ext_i])
         linkvars = scat(n.links.capital_cost[links_ext_i],
-                        df_var(n, 'Link', 'p_nom')[links_ext_i])
+                        get_var(n, 'Link', 'p_nom')[links_ext_i])
         lhs = scat(join_entries(linevars), join_entries(linkvars))
         sense = glc.sense
         rhs = glc.constant
@@ -336,20 +343,21 @@ def define_objective(n):
                 .loc[:, lambda ds: (ds != 0).all()]
                 .mul(n.snapshot_weightings, axis=0))
         if cost.empty: continue
-        terms = scat(cost, pnl_var(n, c, attr)[cost.columns], '\n')
+        terms = scat(cost, get_var(n, c, attr)[cost.columns], '\n')
         for t in terms.flatten():
             n.objective_f.write(t)
     #investment
-    for c, attr in prefix.items():
+    for c, attr in nominals.items():
         cost = n.df(c)['capital_cost'][get_extendable_i(n, c)]
         if cost.empty: continue
-        terms = scat(cost, df_var(n, c, attr +'_nom')[cost.index], '\n')
+        terms = scat(cost, get_var(n, c, attr)[cost.index], '\n')
         for t in terms.flatten():
             n.objective_f.write(t)
 
 
+
 def prepare_lopf(n, snapshots=None, keep_files=False,
-                 extra_functionality=None, working_mode=False):
+                 extra_functionality=None):
     reset_counter()
 
     #used in kirchhoff and globals
@@ -362,7 +370,7 @@ def prepare_lopf(n, snapshots=None, keep_files=False,
     snapshots = n.snapshots if snapshots is None else snapshots
     start = time.time()
     def time_info(message):
-        logger.info(f'{message} {int(time.time()-start)}s')
+        logger.info(f'{message} {round(time.time()-start, 2)}s')
 
     n.identifier = ''.join(random.choice(string.ascii_lowercase)
                         for i in range(8))
@@ -381,7 +389,8 @@ def prepare_lopf(n, snapshots=None, keep_files=False,
 
 
     for c, attr in lookup.query('nominal and not handle_separately').index:
-        define_nominal_for_extendable_variables(n, c)
+        define_nominal_for_extendable_variables(n, c, attr)
+        define_fixed_variariable_constraints(n, snapshots, c, attr, pnl=False)
     for c, attr in lookup.query('not nominal and not handle_separately').index:
         define_dispatch_for_non_extendable_variables(n, snapshots, c, attr)
         define_dispatch_for_extendable_variables(n, snapshots, c, attr)
@@ -395,9 +404,6 @@ def prepare_lopf(n, snapshots=None, keep_files=False,
     define_nodal_balance_constraints(n, snapshots)
     define_global_constraints(n, snapshots)
     define_objective(n)
-
-    if working_mode:
-        return
 
     n.objective_f.close()
     n.constraints_f.close()
@@ -424,7 +430,7 @@ def assign_solution(n, sns, variables_sol, constraints_dual,
     #solutions
     def map_solution(c, attr, pnl):
         if pnl:
-            variables = pnl_var(n, c, attr, pop=pop)
+            variables = get_var(n, c, attr, pop=pop)
             if variables.empty: return
             values = variables.stack().map(variables_sol).unstack()
             if c in n.passive_branch_components:
@@ -436,7 +442,7 @@ def assign_solution(n, sns, variables_sol, constraints_dual,
             else:
                 n.pnl(c)[attr] = values
         elif not get_extendable_i(n, c).empty:
-            n.df(c)[attr+'_opt'] = df_var(n, c, attr, pop=pop)\
+            n.df(c)[attr+'_opt'] = get_var(n, c, attr, pop=pop)\
                                     .map(variables_sol).fillna(n.df(c)[attr])
         else:
             n.df(c)[attr+'_opt'] = n.df(c)[attr]
@@ -451,10 +457,10 @@ def assign_solution(n, sns, variables_sol, constraints_dual,
     #duals
     def map_dual(c, attr, pnl):
         if pnl:
-            n.pnl(c)[attr] = (pnl_con(n, c, attr, pop=pop).stack()
+            n.pnl(c)[attr] = (get_con(n, c, attr, pop=pop).stack()
                                       .map(-constraints_dual).unstack())
         else:
-            n.df(c)[attr] = df_con(n, c, attr, pop=pop).map(-constraints_dual)
+            n.df(c)[attr] = get_con(n, c, attr, pop=pop).map(-constraints_dual)
 
     for (c, attr), pnl in n.constraints.pnl.items():
         map_dual(c, attr, pnl)
@@ -570,6 +576,9 @@ def lopf(n, snapshots=None, solver_name="cbc",
     if termination_condition != "optimal":
         return status,termination_condition
 
+    #adjust objective value
+    for c, attr in nominals.items():
+        obj -= n.df(c)[attr] @ n.df(c).capital_cost
     n.objective = obj
     gc.collect()
     assign_solution(n, snapshots, variables_sol, constraints_dual,
