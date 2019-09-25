@@ -43,16 +43,16 @@ It has been tested against the standard PyPSA examples.
 - [x] include ramp limits
 - [x] include Storage Units
 - [x] calculate nodal imbalances
-- [ ] constant term in objective function
-- [ ] calculate voltage angles
+- [x] constant term in objective function
+- [x] calculate voltage angles
 - [ ] implement glpk solver
 - [ ] logfile for cbc
-
+- [ ] add unit commitment? 
 
 ## additional features
 
 - [x] global constraints for transmission expansion volume/cost limit
-- [x] fix values via '_set' for arbitrary components (worked for state of charge only)
+- [x] fix values via '_set' for arbitrary variables, also static variables (so f.e. n.generators.p_nom_set can fix values for extendable p_nom variables)
 - [ ] handle non-optimal solutions
 
 
