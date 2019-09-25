@@ -164,8 +164,6 @@ def define_nodal_balance_constraints(n, sns):
 
 
 def define_kirchhoff_constraints(n):
-    n.calculate_dependent_values()
-    n.determine_network_topology()
     weightings = n.lines.x_pu_eff.where(n.lines.carrier == 'AC', n.lines.r_pu_eff)
 
     def cycle_flow(ds):
@@ -418,66 +416,22 @@ def prepare_lopf(n, snapshots=None, keep_files=False,
 # solvers, solving, assigning
 # =============================================================================
 
-def run_cbc(filename, solution_fn, solver_logfile, solver_options, keep_files):
+def run_and_read_cbc(n, solution_fn, solver_logfile,
+                     solver_options, keep_files):
     options = "" #-dualsimplex -primalsimplex
     #printingOptions is about what goes in solution file
-    command = (f"cbc -printingOptions all -import {filename}"
+    command = (f"cbc -printingOptions all -import {n.problem_fn}"
                f" -stat=1 -solve {options} -solu {solution_fn}")
     os.system(command)
-#    logfile = open(solver_logfile, 'w')
-#    status = subprocess.run(["cbc",command[4:]], bufsize=0, stdout=logfile)
+    #logfile = open(solver_logfile, 'w')
+    #status = subprocess.run(["cbc",command[4:]], bufsize=0, stdout=logfile)
     #logfile.close()
 
-    if not keep_files:
-       os.system("rm "+ filename)
-
-
-def run_and_read_gurobi(n, filename, solution_fn, solver_logfile,
-               solver_options, keep_files):
-    m = gurobipy.read(filename)
-
-    if not keep_files:
-        os.system("rm "+ filename)
-
-    for key, value in solver_options.items():
-        m.setParam(key, value)
-    m.optimize()
-
-    Status = gurobipy.GRB.Status
-    statmap = {getattr(Status, s) : s.lower() for s in Status.__dir__()
-                                     if not s.startswith('_')}
-    status = statmap[m.status]
-    variables_sol = pd.Series({v.VarName: v.x for v in m.getVars()})
-    constraints_dual = pd.Series({c.ConstrName: c.Pi for c in m.getConstrs()})
-    termination_condition = status
-    del m
-    return status, termination_condition, variables_sol, constraints_dual
-
-#    solver_options["logfile"] = solver_logfile
-#    script = (
-#       f'import sys \n'
-#       'from gurobipy import * \n'
-#       f'path = "{os.path.dirname(pyomo.__file__)}/solvers/plugins/solvers" \n'
-#       'sys.path.append(path) \n'
-#       'from GUROBI_RUN import * \n'
-#       f'gurobi_run("{filename}",None,"{solution_fn}",None,{solver_options},["dual"],) \n'
-#       'quit()')
-#
-#    script_fn = "/tmp/gurobi-{}.script".format(n.identifier)
-#    with open(script_fn,"w") as fn:
-#        fn.write(script)
-#    os.system(f"gurobi.sh {script_fn}")
-
-#        os.system("rm "+ script_fn)
-
-
-def read_cbc(n, solution_fn, keep_files):
     f = open(solution_fn,"r")
     data = f.readline()
     f.close()
 
     status = "ok"
-
     if data[:len("Optimal - objective value ")] == "Optimal - objective value ":
         termination_condition = "optimal"
         n.objective = float(data[len("Optimal - objective value "):])
@@ -496,30 +450,32 @@ def read_cbc(n, solution_fn, keep_files):
     constraints_dual = sol[~variables_b][3]
 
     if not keep_files:
+       os.system("rm "+ n.problem_fn)
        os.system("rm "+ solution_fn)
 
     return status, termination_condition, variables_sol, constraints_dual
 
 
-#def read_gurobi(n, solution_fn, keep_files):
-#    f = open(solution_fn,"r")
-#    lines = [f.readline().replace('\n', '') for i in range(23)]
-#    f.close()
-#
-#    sol = pd.read_csv(solution_fn, header=None, skiprows=range(23),
-#                      sep=' ', index_col=0, usecols=[1,3])[3]
-#    variables_b = sol.index.str[0] == 'x'
-#    variables_sol = sol[variables_b]
-#    constraints_dual = sol[~variables_b]
-#
-#    if not keep_files:
-#       os.system("rm "+ solution_fn)
-#
-#    status = lines[12].split(' ')[1]
-#    termination_condition = lines[19].split(' ')[1]
-#    n.objective = float(lines[21].split(' ')[1])
-#
-#    return status, termination_condition, variables_sol, constraints_dual
+def run_and_read_gurobi(n, solution_fn, solver_logfile,
+                        solver_options, keep_files):
+    m = gurobipy.read(n.problem_fn)
+
+    if not keep_files:
+        os.system("rm "+ n.problem_fn)
+
+    for key, value in solver_options.items():
+        m.setParam(key, value)
+    m.optimize()
+
+    Status = gurobipy.GRB.Status
+    statmap = {getattr(Status, s) : s.lower() for s in Status.__dir__()
+                                     if not s.startswith('_')}
+    status = statmap[m.status]
+    variables_sol = pd.Series({v.VarName: v.x for v in m.getVars()})
+    constraints_dual = pd.Series({c.ConstrName: c.Pi for c in m.getConstrs()})
+    termination_condition = status
+    del m
+    return status, termination_condition, variables_sol, constraints_dual
 
 
 def assign_solution(n, sns, variables_sol, constraints_dual,
@@ -576,7 +532,6 @@ def assign_solution(n, sns, variables_sol, constraints_dual,
              for c, attr, group in ca], axis=1).groupby(level=0, axis=1).sum()
 
     def v_ang_for_(sub):
-        sub.find_bus_controls()
         buses_i = sub.buses_o
         if len(buses_i) == 1: return
         sub.calculate_B_H(skip_pre=True)
@@ -631,7 +586,8 @@ def lopf(n, snapshots=None, solver_name="cbc",
         This function must take three arguments
         `extra_postprocessing(network,snapshots,duals)` and is called after
         the model has solved and the results are extracted. It allows the user to
-        extract further information about the solution, such as additional shadow prices.
+        extract further information about the solution, such as additional
+        shadow prices.
 
     Returns
     -------
@@ -647,6 +603,10 @@ def lopf(n, snapshots=None, solver_name="cbc",
 
 
     snapshots = _as_snapshots(n, snapshots)
+    n.calculate_dependent_values()
+    n.determine_network_topology()
+    for sub in n.sub_networks.obj:
+        sub.find_bus_controls()
 
     if solver_logfile is None:
         solver_logfile = "test.log"
@@ -659,14 +619,13 @@ def lopf(n, snapshots=None, solver_name="cbc",
     logger.info("Solve linear problem")
 
     if solver_name == "cbc":
-        run_cbc(n.problem_fn, solution_fn, solver_logfile,
-                solver_options, keep_files=True)
-        res = read_cbc(n, solution_fn, keep_files)
+        res = run_and_read_cbc(n, solution_fn, solver_logfile,
+                               solver_options, keep_files=True)
     elif solver_name == "gurobi":
-        res = run_and_read_gurobi(n, n.problem_fn, solution_fn, solver_logfile,
+        res = run_and_read_gurobi(n, solution_fn, solver_logfile,
                                   solver_options, keep_files)
-#        read_gurobi(n, solution_fn, keep_files)
     status, termination_condition, variables_sol, constraints_dual = res
+    del n.problem_fn
 
     if termination_condition != "optimal":
         return status,termination_condition

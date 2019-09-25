@@ -57,17 +57,18 @@ n.generators.loc['Manchester Wind', 'p_nom_set'] = 3000
 #nomopyomo.prepare_lopf(n, working_mode=False)
 
 #solve it with gurobi and validate
-nomopyomo.lopf(n, solver_name='gurobi', remove_references=True, keep_files=True)
+nomopyomo.lopf(n, solver_name='gurobi', remove_references=False,
+               keep_files=False)
 
 nomopyomo.test.check_nominal_bounds(n)
 nomopyomo.test.check_nodal_balance_constraint(n)
 nomopyomo.test.check_storage_unit_contraints(n)
 nomopyomo.test.check_store_contraints(n)
 
-##solve it with cbc and validate
-#nomopyomo.lopf(n, solver_name='cbc')
-#
-#nomopyomo.test.check_nominal_bounds(n)
-#nomopyomo.test.check_nodal_balance_constraint(n)
-#nomopyomo.test.check_storage_unit_contraints(n)
-#nomopyomo.test.check_store_contraints(n)
+#solve it with cbc and validate
+nomopyomo.lopf(n, solver_name='cbc')
+
+nomopyomo.test.check_nominal_bounds(n)
+nomopyomo.test.check_nodal_balance_constraint(n)
+nomopyomo.test.check_storage_unit_contraints(n)
+nomopyomo.test.check_store_contraints(n)
