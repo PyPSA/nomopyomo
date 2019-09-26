@@ -7,7 +7,7 @@ Created on Sat Sep  7 17:38:10 2019
 """
 
 import pandas as pd
-import os, gurobipy, logging
+import os, gurobipy, logging, re, io, subprocess
 import numpy as np
 from pypsa.descriptors import get_switchable_as_dense as get_as_dense
 from pandas import IndexSlice as idx
@@ -46,8 +46,8 @@ def write_bound(n, lower, upper, axes=None):
     xCounter += length
     variables = np.array([f'x{x}' for x in range(xCounter - length, xCounter)],
                           dtype=object).reshape(shape)
-
-    for s in scat(lower, ' <= ', variables, ' <= ', upper, '\n').flatten():
+    lower, upper = strarray(lower), strarray(upper)
+    for s in (lower + ' <= '+ variables + ' <= '+ upper + '\n').flatten():
         n.bounds_f.write(s)
     return ser_or_frame(variables, *axes)
 
@@ -71,7 +71,8 @@ def write_constraint(n, lhs, sense, rhs, axes=None):
                             dtype=object).reshape(shape)
     if isinstance(sense, str):
         sense = '=' if sense == '==' else sense
-    for c in scat(cons, ':\n', lhs, '\n', sense, '\n', rhs, '\n\n').flatten():
+    lhs, sense, rhs = strarray(lhs), strarray(sense), strarray(rhs)
+    for c in (cons + ':\n' + lhs + sense + '\n' + rhs + '\n\n').flatten():
         n.constraints_f.write(c)
     return ser_or_frame(cons, *axes)
 
@@ -104,82 +105,76 @@ def broadcasted_axes(*dfs):
     return axes, shape
 
 
-def scat(*vals, return_axes=False):
+def linexpr(*tuples, return_axes=False):
     """
-    Elementwise concatenation of strings in arrays, series, frames. Returns
+    Elementwise concatenation of tuples in the form (coefficient, variables).
+    Coefficient and variables can be arrays, series or frames. Returns
     a np.ndarray of strings. If return_axes is set to True and a pd.Series or
-    pd.DataFrame was past the corresponding axes is returned additionaly. For
-    turning is into a series or frame use
-    pd.Series(*scat(..., return_axes=True)) or
-    pd.DataFrame(*scat(..., return_axes=True)) respectively.
+    pd.DataFrame was past, the corresponding index (and column if existent) is
+    returned additionaly.
 
+    Parameters
+    ----------
+    tulples: tuple of tuples
+        Each tuple must of the form (coeff, var), where
+            * coeff is a numerical  value, or a numeical array, series, frame
+            * var is a str or a array, series, frame of variable strings
+    return_axes: Boolean, default False
+        Whether to return index and column (if existent)
+
+    Example
+    -------
+    >>> coeff1 = 1
+    >>> var1 = pd.Series(['a1', 'a2', 'a3'])
+    >>> coeff2 = pd.Series([-0.5, -0.3, -1])
+    >>> var2 = pd.Series(['b1', 'b2', 'b3'])
+
+    >>> linexpr((coeff1, var1), (coeff2, var2))
+    array(['+1.0 a1\n-0.5 b1\n', '+1.0 a2\n-0.3 b2\n', '+1.0 a3\n-1.0 b3\n'],
+      dtype=object)
+
+
+    For turning the result into a series or frame again:
+    >>> pd.Series(*linexpr((coeff1, var1), (coeff2, var2), return_axes=True))
+    0    +1.0 a1\n-0.5 b1\n
+    1    +1.0 a2\n-0.3 b2\n
+    2    +1.0 a3\n-1.0 b3\n
+    dtype: object
+
+    This can also be applied to DataFrames, using
+    pd.DataFrame(*linexpr(..., return_axes=True)).
     """
-    axes, shape = broadcasted_axes(*vals)
-    vals = [val.values if isinstance(val, (pd.Series, pd.DataFrame)) else val
-            for val in vals]
-    vals = [numerical_to_string(val) for val in vals]
-    start = np.repeat('', np.prod(shape)).reshape(shape).astype(object)
+    axes, shape = broadcasted_axes(*sum(tuples, ()))
+    expr = np.repeat('', np.prod(shape)).reshape(shape).astype(object)
+    if np.prod(shape):
+        for coeff, var in tuples:
+            expr += strarray(coeff) + strarray(var) + '\n'
     if return_axes:
-        return (sum(vals, start), *axes)
-    else:
-        return sum(vals, start)
+        return (expr, *axes)
+    return expr
 
 
-def numerical_to_string(val, append_space=True):
-    """
-    Converts arrays, series or frames of string to strings of numericals with
-    with related sign (necessary for the lp file).
-    """
-    if isinstance(val, str):
-        return val
-    if isinstance(val, (float, int)):
-        s = f' +{float(val)}' if val >= 0 else f' {float(val)}'
-        return s + ' ' if append_space else s
-    if isinstance(val, np.ndarray):
-        if val.dtype == object:
-            return val
-        signs = pd.Series(val) if val.ndim == 1 else pd.DataFrame(val)
-        signs = signs.pipe(np.sign).replace([0, 1, -1], [' +', ' +', ' -']).values
-    else:
-        if val.values.dtype == object:
-            return val
-        signs = val.pipe(np.sign).replace([0, 1, -1], [' +', ' +', ' -']).values
-    s = charprepend(signs, abs(val).astype(str))
-    return charappend(s, ' ') if append_space else s
+def strarray(array):
+    if isinstance(array, (float, int)):
+        array = f'+{float(array)} ' if array >= 0 else f'{float(array)} '
+    elif isinstance(array, (pd.Series, pd.DataFrame)):
+        array = array.values
+    if isinstance(array, np.ndarray):
+        if not (array.dtype == object) and array.size:
+            signs = pd.Series(array) if array.ndim == 1 else pd.DataFrame(array)
+            signs = (signs.pipe(np.sign)
+                     .replace([0, 1, -1], ['+', '+', '-']).values)
+            array = signs + abs(array).astype(str) + ' '
+    return array
 
 
-#weigh faster than adding string using '+'
-def charappend(df, char):
-    """
-    Fast way to append a char or string to a large pd.DataFrame.
-    """
-    if not df.size:
-        return df
-    if isinstance(df, np.ndarray):
-        return df + char
-    d = df.copy()
-    d[:] = d.values + char
-    return d
-
-def charprepend(df, char):
-    """
-    Fast way to prepend a char or string to a large pd.DataFrame.
-    """
-    if not df.size:
-        return df
-    if isinstance(df, np.ndarray):
-        return df + char
-    d = df.copy()
-    d[:] = char + d.values
-    return d
-
-def join_entries(df):
+def join_exprs(df):
     """
     Helper function to join arrays, series or frames of stings together.
     """
     if isinstance(df, np.ndarray):
-        return '\n'.join(df.flatten())
-    return '\n'.join(df.values.flatten())
+        return ''.join(df.flatten())
+    return ''.join(df.values.flatten())
 
 def expand_series(ser, columns):
     """
@@ -258,7 +253,8 @@ def align_frame_function_getter(n, c, snapshots):
         if subset is not None:
             coefficient = coefficient[subset]
             df = df[subset]
-        return pd.DataFrame(*scat(coefficient, df, '\n', return_axes=True))\
+        term, axes = linexpr(coefficient, df, return_axes=True)
+        return pd.DataFrame(term + '\n', *axes)\
                  .reindex(index=snapshots, columns=columns, fill_value='')
     return aligned_frame
 
@@ -372,22 +368,21 @@ def get_con(n, c, attr, pop=False):
 
 def run_and_read_cbc(problem_fn, solution_fn, solver_logfile,
                      solver_options, keep_files):
-    options = "" #-dualsimplex -primalsimplex
     #printingOptions is about what goes in solution file
     command = (f"cbc -printingOptions all -import {problem_fn}"
-               f" -stat=1 -solve {options} -solu {solution_fn}")
-    os.system(command)
-    #logfile = open(solver_logfile, 'w')
-    #status = subprocess.run(["cbc",command[4:]], bufsize=0, stdout=logfile)
-    #logfile.close()
+               f" -stat=1 -solve -solu {solution_fn} {solver_options}")
+
+    result = subprocess.run(command.split(' '), stdout=subprocess.PIPE)
+    if solver_logfile is not None:
+        print(result.stdout.decode('utf-8'), file=open(solver_logfile, 'w'))
 
     f = open(solution_fn,"r")
     data = f.readline()
     f.close()
 
-    status = "ok"
-    if data[:len("Optimal - objective value ")] == "Optimal - objective value ":
-        termination_condition = "optimal"
+    if data.startswith("Optimal - objective value"):
+        status = "optimal"
+        termination_condition = status
         objective = float(data[len("Optimal - objective value "):])
     elif "Infeasible" in data:
         termination_condition = "infeasible"
@@ -395,7 +390,7 @@ def run_and_read_cbc(problem_fn, solution_fn, solver_logfile,
         termination_condition = "other"
 
     if termination_condition != "optimal":
-        return status, termination_condition, None, None
+        return status, termination_condition, None, None, None
 
     sol = pd.read_csv(solution_fn, header=None, skiprows=[0],
                       sep=r'\s+', usecols=[1,2,3], index_col=0)
@@ -411,9 +406,50 @@ def run_and_read_cbc(problem_fn, solution_fn, solver_logfile,
             constraints_dual, objective)
 
 
+def run_and_read_glpk(problem_fn, solution_fn, solver_logfile,
+                     solver_options, keep_files):
+    # for solver_options lookup https://kam.mff.cuni.cz/~elias/glpk.pdf
+    options = ''
+    if solver_logfile is not None:
+        options += f'--log {solver_logfile}'
+    command = (f"glpsol --lp {problem_fn} --output {solution_fn} {options}")
+
+    os.system(command)
+
+    data = open(solution_fn)
+    info = ''
+    linebreak = False
+    while not linebreak:
+        line = data.readline()
+        linebreak = line == '\n'
+        info += line
+    info = pd.read_csv(io.StringIO(info), sep=':',  index_col=0, header=None)[1]
+    status = info.Status.lower().strip()
+    objective = float(re.sub('[^0-9]+', '', info.Objective))
+    termination_condition = status
+
+    if termination_condition != "optimal":
+        return status, termination_condition, None, None, None
+
+    sol = pd.read_fwf(data).set_index('Row name')
+    variables_b = sol.index.str[0] == 'x'
+    variables_sol = sol[variables_b]['Activity'].astype(float)
+    sol = sol[~variables_b]
+    constraints_b = sol.index.str[0] == 'c'
+    constraints_dual = (pd.to_numeric(sol[constraints_b]['Marginal'], 'coerce')
+                        .fillna(0))
+
+    if not keep_files:
+       os.system("rm "+ problem_fn)
+       os.system("rm "+ solution_fn)
+
+    return (status, termination_condition, variables_sol,
+            constraints_dual, objective)
+
+
 def run_and_read_gurobi(problem_fn, solution_fn, solver_logfile,
                         solver_options, keep_files):
-    # TODO: add solver_file as std output
+    solver_options["logfile"] = solver_logfile
     logging.disable()
     m = gurobipy.read(problem_fn)
 
@@ -429,6 +465,10 @@ def run_and_read_gurobi(problem_fn, solution_fn, solver_logfile,
     statusmap = {getattr(Status, s) : s.lower() for s in Status.__dir__()
                                                 if not s.startswith('_')}
     status = statusmap[m.status]
+    termination_condition = status
+    if termination_condition != "optimal":
+        return status, termination_condition, None, None, None
+
     variables_sol = pd.Series({v.VarName: v.x for v in m.getVars()})
     constraints_dual = pd.Series({c.ConstrName: c.Pi for c in m.getConstrs()})
     termination_condition = status
