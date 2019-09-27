@@ -348,7 +348,7 @@ def define_objective(n):
                 .loc[:, lambda ds: (ds != 0).all()]
                 .mul(n.snapshot_weightings, axis=0))
         if cost.empty: continue
-        terms = linexpr((cost, get_var(n, c, attr)[cost.columns])) + '\n'
+        terms = linexpr((cost, get_var(n, c, attr)[cost.columns]))
         for t in terms.flatten():
             n.objective_f.write(t)
     #investment
@@ -430,8 +430,8 @@ def prepare_lopf(n, snapshots=None, keep_files=False,
 
 
 def assign_solution(n, sns, variables_sol, constraints_dual,
-                    extra_postprocessing, remove_references=True):
-    pop = remove_references
+                    extra_postprocessing, keep_references=False):
+    pop = not keep_references
     #solutions
     def map_solution(c, attr, pnl):
         if pnl:
@@ -500,8 +500,8 @@ def assign_solution(n, sns, variables_sol, constraints_dual,
 def lopf(n, snapshots=None, solver_name="cbc",
          solver_logfile=None, skip_pre=False,
          extra_functionality=None, extra_postprocessing=None,
-         formulation="kirchhoff", remove_references=True,
-         solver_options={}, keep_files=False):
+         formulation="kirchhoff", keep_references=False, solver_options={},
+         keep_files=False, warmstart=False, store_basis=True):
     """
     Linear optimal power flow for a group of snapshots.
 
@@ -569,9 +569,11 @@ def lopf(n, snapshots=None, solver_name="cbc",
 
     logger.info("Solve linear problem")
 
+    if warmstart == True:
+        warmstart = n.basis_fn
     solve = getattr(opt, f'run_and_read_{solver_name}')
-    res = solve(n.problem_fn, solution_fn, solver_logfile,
-                solver_options, keep_files)
+    res = solve(n, n.problem_fn, solution_fn, solver_logfile,
+                solver_options, keep_files, warmstart, store_basis)
     status, termination_condition, variables_sol, constraints_dual, obj = res
     del n.problem_fn
 
@@ -584,7 +586,7 @@ def lopf(n, snapshots=None, solver_name="cbc",
     n.objective = obj
     gc.collect()
     assign_solution(n, snapshots, variables_sol, constraints_dual,
-                    extra_postprocessing, remove_references=remove_references)
+                    extra_postprocessing, keep_references=keep_references)
     gc.collect()
 
     return status,termination_condition

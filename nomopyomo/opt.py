@@ -366,15 +366,26 @@ def get_con(n, c, attr, pop=False):
 # solvers
 # =============================================================================
 
-def run_and_read_cbc(problem_fn, solution_fn, solver_logfile,
-                     solver_options, keep_files):
+def run_and_read_cbc(n, problem_fn, solution_fn, solver_logfile,
+                     solver_options, keep_files, warmstart=None,
+                     store_basis=True):
     #printingOptions is about what goes in solution file
-    command = (f"cbc -printingOptions all -import {problem_fn}"
-               f" -stat=1 -solve -solu {solution_fn} {solver_options}")
+    command = f"cbc -printingOptions all -import {problem_fn} "
+    if warmstart:
+        command += f'-basisI {warmstart} '
+    if solver_options:
+        command += solver_options
+    command += f"-solve -solu {solution_fn} "
+    if store_basis:
+        n.basis_fn = solution_fn.replace('.sol', '.bas')
+        command += f'-basisO {n.basis_fn} '
+
 
     result = subprocess.run(command.split(' '), stdout=subprocess.PIPE)
     if solver_logfile is not None:
         print(result.stdout.decode('utf-8'), file=open(solver_logfile, 'w'))
+    else:
+        print(result)
 
     f = open(solution_fn,"r")
     data = f.readline()
@@ -406,13 +417,20 @@ def run_and_read_cbc(problem_fn, solution_fn, solver_logfile,
             constraints_dual, objective)
 
 
-def run_and_read_glpk(problem_fn, solution_fn, solver_logfile,
-                     solver_options, keep_files):
+def run_and_read_glpk(n, problem_fn, solution_fn, solver_logfile,
+                     solver_options, keep_files, warmstart=None,
+                     store_basis=True):
     # for solver_options lookup https://kam.mff.cuni.cz/~elias/glpk.pdf
-    options = ''
+    command = (f"glpsol --lp {problem_fn} --output {solution_fn}")
     if solver_logfile is not None:
-        options += f'--log {solver_logfile}'
-    command = (f"glpsol --lp {problem_fn} --output {solution_fn} {options}")
+        command += f' --log {solver_logfile}'
+    if warmstart:
+        command += f' --ini {warmstart}'
+    if store_basis:
+        n.basis_fn = solution_fn.replace('.sol', '.bas')
+        command += f' -w {n.basis_fn}'
+    if solver_options:
+        command += solver_options
 
     os.system(command)
 
@@ -447,19 +465,27 @@ def run_and_read_glpk(problem_fn, solution_fn, solver_logfile,
             constraints_dual, objective)
 
 
-def run_and_read_gurobi(problem_fn, solution_fn, solver_logfile,
-                        solver_options, keep_files):
+def run_and_read_gurobi(n, problem_fn, solution_fn, solver_logfile,
+                        solver_options, keep_files, warmstart=None,
+                        store_basis=True):
     solver_options["logfile"] = solver_logfile
     logging.disable()
     m = gurobipy.read(problem_fn)
 
-    if not keep_files:
-        os.system("rm "+ problem_fn)
-
     for key, value in solver_options.items():
         m.setParam(key, value)
+
+    if warmstart:
+        m.read(warmstart)
+
     m.optimize()
     logging.disable(1)
+
+    if store_basis:
+        n.basis_fn = solution_fn.replace('.sol', '.bas')
+        m.write(n.basis_fn)
+    if not keep_files:
+        os.system("rm "+ problem_fn)
 
     Status = gurobipy.GRB.Status
     statusmap = {getattr(Status, s) : s.lower() for s in Status.__dir__()
@@ -478,3 +504,27 @@ def run_and_read_gurobi(problem_fn, solution_fn, solver_logfile,
             constraints_dual, objective)
 
 
+#    if warmstart:
+#        if network is None:
+#            ValueError('Network must be given to set a warmstart')
+#        n = network
+#        for (c, attr), pnl in n.variables.pnl.items():
+#            if pnl:
+#                attr_name = 'p0' if c in n.branch_components else attr
+#                start = n.pnl(c)[attr_name].stack()
+#            else:
+#                if (attr + '_opt') not in n.df(c):
+#                    continue
+#                start = n.df(c)[attr + '_opt'].dropna()
+#            var = get_var(n, c, attr)
+#            var = var.stack().dropna() if pnl else var.dropna()
+#            var, start = var.align(start, join='inner')
+#            for v, s in np.column_stack((var.values, start.values)):
+#                m.getVarByName(v).PStart = s
+#        for (c, attr), pnl in n.constraints.pnl.items():
+#            start = n.pnl(c)[attr].stack() if pnl else n.df(c)[attr].dropna()
+#            con = get_con(n, c, attr)
+#            con = con.stack().dropna() if pnl else con.dropna()
+#            con, start = con.align(start, join='inner')
+#            for cc, s in np.column_stack((con.values, start.values)):
+#                m.getConstrByName(cc).DStart = s
