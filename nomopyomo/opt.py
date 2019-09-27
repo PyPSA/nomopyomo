@@ -380,12 +380,11 @@ def run_and_read_cbc(n, problem_fn, solution_fn, solver_logfile,
         n.basis_fn = solution_fn.replace('.sol', '.bas')
         command += f'-basisO {n.basis_fn} '
 
-
-    result = subprocess.run(command.split(' '), stdout=subprocess.PIPE)
-    if solver_logfile is not None:
-        print(result.stdout.decode('utf-8'), file=open(solver_logfile, 'w'))
+    if solver_logfile is None:
+        os.system(command)
     else:
-        print(result)
+        result = subprocess.run(command.split(' '), stdout=subprocess.PIPE)
+        print(result.stdout.decode('utf-8'), file=open(solver_logfile, 'w'))
 
     f = open(solution_fn,"r")
     data = f.readline()
