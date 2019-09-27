@@ -467,7 +467,8 @@ def run_and_read_glpk(n, problem_fn, solution_fn, solver_logfile,
 def run_and_read_gurobi(n, problem_fn, solution_fn, solver_logfile,
                         solver_options, keep_files, warmstart=None,
                         store_basis=True):
-    solver_options["logfile"] = solver_logfile
+    if solver_logfile is not None:
+        solver_options["logfile"] = solver_logfile
     logging.disable()
     m = gurobipy.read(problem_fn)
 
