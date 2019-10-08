@@ -659,6 +659,7 @@ def ilopf(n, snapshots=None, msq_threshold=0.05, min_iterations=1,
 
         s_nom_prev = n.lines.s_nom_opt if iteration else n.lines.s_nom
         kwargs['warmstart'] = bool(iteration and ('basis_fn' in n.__dir__()))
+#        import pdb; pdb.set_trace()
         lopf(n, snapshots, **kwargs)
         update_line_params(n, s_nom_prev)
         diff = msq_diff(n, s_nom_prev)

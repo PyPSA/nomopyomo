@@ -470,6 +470,7 @@ def run_and_read_gurobi(n, problem_fn, solution_fn, solver_logfile,
             m.write(n.basis_fn)
         except gurobipy.GurobiError:
             logging.info('No model basis stored')
+            del n.basis_fn
 
     if not keep_files:
         os.system("rm "+ problem_fn)
