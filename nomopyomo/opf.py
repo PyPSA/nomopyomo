@@ -650,16 +650,17 @@ def ilopf(n, snapshots=None, msq_threshold=0.05, min_iterations=1,
         return lines_err
 
     iteration = 0
-    s_nom_prev = n.lines.s_nom
-    while msq_diff(n, s_nom_prev) > msq_threshold or iteration < min_iterations:
+    diff = msq_threshold
+    while diff >= msq_threshold or iteration < min_iterations:
         if iteration >= max_iterations:
             logger.info(f'Iteration {iteration} beyond max_iterations '
                         f'{max_iterations}. Stopping ...')
             break
 
         s_nom_prev = n.lines.s_nom_opt if iteration else n.lines.s_nom
-        kwargs['warmstart'] = True if iteration else False
+        kwargs['warmstart'] = bool(iteration and ('basis_fn' in n.__dir__()))
         lopf(n, snapshots, **kwargs)
         update_line_params(n, s_nom_prev)
+        diff = msq_diff(n, s_nom_prev)
         iteration += 1
 
