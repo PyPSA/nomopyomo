@@ -447,6 +447,8 @@ def run_and_read_glpk(n, problem_fn, solution_fn, solver_logfile,
 def run_and_read_gurobi(n, problem_fn, solution_fn, solver_logfile,
                         solver_options, keep_files, warmstart=None,
                         store_basis=True):
+    # for solver options see
+    # https://www.gurobi.com/documentation/8.1/refman/parameter_descriptions.html
     if (solver_logfile is not None) and (solver_options is not None):
         solver_options["logfile"] = solver_logfile
     logging.disable()
@@ -464,7 +466,11 @@ def run_and_read_gurobi(n, problem_fn, solution_fn, solver_logfile,
 
     if store_basis:
         n.basis_fn = solution_fn.replace('.sol', '.bas')
-        m.write(n.basis_fn)
+        try:
+            m.write(n.basis_fn)
+        except gurobipy.GurobiError:
+            logging.info('No model basis stored')
+
     if not keep_files:
         os.system("rm "+ problem_fn)
 
