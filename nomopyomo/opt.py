@@ -46,7 +46,7 @@ def write_bound(n, lower, upper, axes=None):
     xCounter += length
     variables = np.array([f'x{x}' for x in range(xCounter - length, xCounter)],
                           dtype=object).reshape(shape)
-    lower, upper = strarray(lower), strarray(upper)
+    lower, upper = _str_array(lower), _str_array(upper)
     for s in (lower + ' <= '+ variables + ' <= '+ upper + '\n').flatten():
         n.bounds_f.write(s)
     return ser_or_frame(variables, *axes)
@@ -71,7 +71,7 @@ def write_constraint(n, lhs, sense, rhs, axes=None):
                             dtype=object).reshape(shape)
     if isinstance(sense, str):
         sense = '=' if sense == '==' else sense
-    lhs, sense, rhs = strarray(lhs), strarray(sense), strarray(rhs)
+    lhs, sense, rhs = _str_array(lhs), _str_array(sense), _str_array(rhs)
     for c in (cons + ':\n' + lhs + sense + '\n' + rhs + '\n\n').flatten():
         n.constraints_f.write(c)
     return ser_or_frame(cons, *axes)
@@ -148,13 +148,13 @@ def linexpr(*tuples, return_axes=False):
     expr = np.repeat('', np.prod(shape)).reshape(shape).astype(object)
     if np.prod(shape):
         for coeff, var in tuples:
-            expr += strarray(coeff) + strarray(var) + '\n'
+            expr += _str_array(coeff) + _str_array(var) + '\n'
     if return_axes:
         return (expr, *axes)
     return expr
 
 
-def strarray(array):
+def _str_array(array):
     if isinstance(array, (float, int)):
         array = f'+{float(array)} ' if array >= 0 else f'{float(array)} '
     elif isinstance(array, (pd.Series, pd.DataFrame)):
@@ -172,9 +172,7 @@ def join_exprs(df):
     """
     Helper function to join arrays, series or frames of stings together.
     """
-    if isinstance(df, np.ndarray):
-        return ''.join(df.flatten())
-    return ''.join(df.values.flatten())
+    return ''.join(np.asarray(df).flatten())
 
 def expand_series(ser, columns):
     """
@@ -239,24 +237,6 @@ def get_bounds_pu(n, c, sns, index=slice(None), attr=None):
         min_pu = get_as_dense(n, c, min_pu_str, sns)
     return min_pu[index], max_pu[index]
 
-
-def align_frame_function_getter(n, c, snapshots):
-    """
-    Returns a function for a given component and  given snapshots which aligns
-    coefficients and variables according to the component. The resulting
-    frames then can directly be string-concated. Used for stores and
-    storage units, where variables are treated differently because of cyclic
-    non-cyclic differentiation.
-    """
-    columns = n.df(c).index
-    def aligned_frame(coefficient, df, subset=None):
-        if subset is not None:
-            coefficient = coefficient[subset]
-            df = df[subset]
-        term, axes = linexpr(coefficient, df, return_axes=True)
-        return pd.DataFrame(term + '\n', *axes)\
-                 .reindex(index=snapshots, columns=columns, fill_value='')
-    return aligned_frame
 
 # =============================================================================
 #  references to vars and cons, rewrite this part to not store every reference
@@ -467,13 +447,14 @@ def run_and_read_glpk(n, problem_fn, solution_fn, solver_logfile,
 def run_and_read_gurobi(n, problem_fn, solution_fn, solver_logfile,
                         solver_options, keep_files, warmstart=None,
                         store_basis=True):
-    if solver_logfile is not None:
+    if (solver_logfile is not None) and (solver_options is not None):
         solver_options["logfile"] = solver_logfile
     logging.disable()
     m = gurobipy.read(problem_fn)
 
-    for key, value in solver_options.items():
-        m.setParam(key, value)
+    if solver_options is not None:
+        for key, value in solver_options.items():
+            m.setParam(key, value)
 
     if warmstart:
         m.read(warmstart)

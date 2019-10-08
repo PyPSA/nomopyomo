@@ -552,12 +552,14 @@ def lopf(n, snapshots=None, solver_name="cbc",
     if formulation != "kirchhoff":
         raise NotImplementedError("Only the kirchhoff formulation is supported")
 
-
+    #disable logging because multiple slack bus calculations, keep output clean
+    logging.disable()
     snapshots = _as_snapshots(n, snapshots)
     n.calculate_dependent_values()
     n.determine_network_topology()
     for sub in n.sub_networks.obj:
         sub.find_bus_controls()
+    logging.disable(1)
 
     if solver_logfile is None:
         solver_logfile = "test.log"
@@ -567,10 +569,12 @@ def lopf(n, snapshots=None, solver_name="cbc",
     gc.collect()
     solution_fn = "/tmp/test-{}.sol".format(n.identifier)
 
-    logger.info("Solve linear problem")
-
     if warmstart == True:
         warmstart = n.basis_fn
+        logger.info("Solve linear problem using warmstart")
+    else:
+        logger.info("Solve linear problem")
+
     solve = getattr(opt, f'run_and_read_{solver_name}')
     res = solve(n, n.problem_fn, solution_fn, solver_logfile,
                 solver_options, keep_files, warmstart, store_basis)
@@ -590,3 +594,72 @@ def lopf(n, snapshots=None, solver_name="cbc",
     gc.collect()
 
     return status,termination_condition
+
+
+def ilopf(n, snapshots=None, msq_threshold=0.05, min_iterations=1,
+          max_iterations=100, **kwargs):
+    '''
+    Iterative linear optimization updating the line parameters for passive
+    AC and DC lines. This is helpful when line expansion is enabled. After each
+    sucessful solving, line impedances and line resistance are recalculated
+    based on the optimization result. If warmstart is possible, it uses the
+    result from the previous iteration to fasten the optimization.
+
+    Parameters
+    ----------
+    snapshots : list or index slice
+        A list of snapshots to optimise, must be a subset of
+        network.snapshots, defaults to network.snapshots
+    msq_threshold: float, default 0.05
+        Maximal mean square difference between optimized line capacity of
+        the current and the previous iteration. As soon as this threshold is
+        undercut, and the number of iterations is bigger than 'min_iterations'
+        the iterative optimization stops
+    min_iterations : integer, default 1
+        Minimal number of iteration to run regardless whether the msq_threshold
+        is already undercut
+    max_iterations : integer, default 100
+        Maximal numbder of iterations to run regardless whether msq_threshold
+        is already undercut
+    **kwargs
+        Keyword arguments of the lopf function which runs at each iteration
+
+    '''
+
+    ext_i = get_extendable_i(n, 'Line')
+    typed_i = n.lines.query('type != ""').index
+    ext_untyped_i = ext_i.difference(typed_i)
+    ext_typed_i = ext_i & typed_i
+    base_s_nom = (np.sqrt(3) * n.lines['type'].map(n.line_types.i_nom) *
+                  n.lines.bus0.map(n.buses.v_nom))
+    n.lines.loc[ext_typed_i, 'num_parallel'] = (n.lines.s_nom/base_s_nom)[ext_typed_i]
+
+    def update_line_params(n, s_nom_prev):
+        factor = n.lines.s_nom_opt / s_nom_prev
+        for attr, carrier in (('x', 'AC'), ('r', 'DC')):
+            ln_i = (n.lines.query('carrier == @carrier').index & ext_untyped_i)
+            n.lines.loc[ln_i, attr] /= factor[ln_i]
+        ln_i = ext_i & typed_i
+        n.lines.loc[ln_i, 'num_parallel'] = (n.lines.s_nom_opt/base_s_nom)[ln_i]
+
+    def msq_diff(n, s_nom_prev):
+        lines_err = np.sqrt((s_nom_prev - n.lines.s_nom_opt).pow(2).mean()) / \
+                        n.lines['s_nom_opt'].mean()
+        logger.info(f"Mean square difference after iteration {iteration} is "
+                    f"{lines_err}")
+        return lines_err
+
+    iteration = 0
+    s_nom_prev = n.lines.s_nom
+    while msq_diff(n, s_nom_prev) > msq_threshold or iteration < min_iterations:
+        if iteration >= max_iterations:
+            logger.info(f'Iteration {iteration} beyond max_iterations '
+                        f'{max_iterations}. Stopping ...')
+            break
+
+        s_nom_prev = n.lines.s_nom_opt if iteration else n.lines.s_nom
+        kwargs['warmstart'] = True if iteration else False
+        lopf(n, snapshots, **kwargs)
+        update_line_params(n, s_nom_prev)
+        iteration += 1
+

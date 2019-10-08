@@ -42,14 +42,15 @@ def check_storage_unit_contraints(n, tol=1e-3):
                                sus.state_of_charge_initial)
     previous_soc = stand_eff * soc.shift().fillna(start)
 
-    assert (spill.round(4) <= inflow[spill.columns].round(4)).all().all()
-
+    assert (spill - inflow[spill.columns]).max().max() < tol, (
+            'The spillage is bigger then the inflow')
 
     reconstructed = (previous_soc.add(store, fill_value=0)
                     .add(inflow, fill_value=0)
                     .add(-dispatch, fill_value=0)
                     .add(-spill, fill_value=0))
-    assert (reconstructed - soc).abs().max().max() < tol
+    assert (reconstructed - soc).abs().max().max() < tol, (
+            'The state of charge is not balanced')
 
 
 def check_nodal_balance_constraint(n, tol=1e-3):
