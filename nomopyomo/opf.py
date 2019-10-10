@@ -544,7 +544,7 @@ def lopf(n, snapshots=None, solver_name="cbc",
     -------
     None
     """
-    supported_solvers = ["cbc", "gurobi", 'glpk']
+    supported_solvers = ["cbc", "gurobi", 'glpk', 'scs']
     if solver_name not in supported_solvers:
         raise NotImplementedError(f"Solver {solver_name} not in "
                                   f"supported solvers: {supported_solvers}")

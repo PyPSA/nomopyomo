@@ -492,6 +492,73 @@ def run_and_read_gurobi(n, problem_fn, solution_fn, solver_logfile,
             constraints_dual, objective)
 
 
+#From https://github.com/bodono/scs-python
+def run_and_read_scs(n, problem_fn, solution_fn, solver_logfile,
+                        solver_options, keep_files, warmstart=None,
+                        store_basis=True):
+    # Follow https://stackoverflow.com/questions/38647230/get-constraints\
+    # -in-matrix-format-from-gurobipy
+    import scipy as sc
+    from scipy.sparse import csc_matrix as csc
+    import scs
+
+    m = gurobipy.read(problem_fn)
+
+    dvars = pd.Series(m.getVars())
+    obj_coeffs = np.array(m.getAttr('Obj', dvars))
+
+    constrs = pd.DataFrame({'Con': m.getConstrs()})
+    constrs['sense'] = constrs.Con.apply(lambda c: c.Sense).astype('category')\
+                              .cat.set_categories(['=', '>', '<'])
+    constrs = constrs.sort_values('sense').reset_index(drop=True)
+    constrs['sign'] = constrs.sense.replace({'=':1, '>':-1, '<':1})
+    constrs['rhs'] = constrs.Con.apply(lambda c: c.RHS) * constrs.sign
+
+    var_indices = {v: i for i, v in enumerate(dvars)}
+    def get_expr_coos(expr):
+        for i in range(expr.size()):
+            dvar = expr.getVar(i)
+            yield expr.getCoeff(i), var_indices[dvar]
+
+    def get_matrix_coo(m):
+        for row_idx, (con, sign) in enumerate(constrs[['Con', 'sign']].values):
+            for coeff, col_idx in get_expr_coos(m.getRow(con)):
+                yield row_idx, col_idx, sign * coeff
+
+    condata = pd.DataFrame(get_matrix_coo(m), columns=['row', 'col', 'coeff'])
+    A = csc((condata.coeff, (condata.row, condata.col)))
+    #extend A and rhs by variable bound constraints
+    ub = dvars.apply(lambda v: v.UB)[lambda x: x!=1e100]
+    lb = dvars.apply(lambda v: v.LB)[lambda x: x!=-1e100]
+    A_ub  = csc((np.ones(len(ub)), (range(len(ub)), ub.index)))
+    A_lb  = csc((-np.ones(len(lb)), (range(len(lb)), lb.index)))
+
+    A = sc.sparse.vstack((A, A_ub, A_lb))
+    b = np.hstack((constrs.rhs, ub, -lb))
+
+    # initialize and solve
+    data = {'A': A, 'b': b, 'c': obj_coeffs}
+    N_eq_con = int((constrs.sense == '=').sum())
+    N_in_con = len(b) - N_eq_con
+    K = {'f': N_eq_con, 'l': N_in_con}
+    sol = scs.solve(data, K, **solver_options)
+
+    varnames = dvars.apply(lambda v: v.VarName)
+    connames = constrs.Con.apply(lambda c: c.ConstrName)
+    variables_sol = pd.Series(sol['x'], varnames)
+    constraints_dual = - pd.Series(sol['y'][:len(constrs)], connames)
+    objective = sol['info']['pobj']
+    status = sol['info']['statusVal']
+#    import pdb; pdb.set_trace()
+    termination_condition = 'optimal' if status <= 3 else 'non-optimal'
+    del m
+
+    return (status, termination_condition, variables_sol,
+            constraints_dual, objective)
+
+
+
+#%%
 #    if warmstart:
 #        if network is None:
 #            ValueError('Network must be given to set a warmstart')

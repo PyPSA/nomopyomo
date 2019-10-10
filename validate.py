@@ -23,8 +23,8 @@ n.generators.loc[n.generators.carrier == 'gas', 'ramp_limit_up'] = 0.005
 # n.generators.loc[n.generators.carrier == 'gas', 'p_nom_extendable'] = False
 
 # fix one generator
-# n.generators_t.p_set.loc[n.snapshots[:5], 'Norway Gas'] = 200
-# n.generators_t.p_set.loc[n.snapshots[8:], 'Manchester Gas'] = 200
+n.generators_t.p_set.loc[n.snapshots[:5], 'Norway Gas'] = 200
+n.generators_t.p_set.loc[n.snapshots[8:], 'Manchester Gas'] = 200
 
 # fix generator capacity
 # n.generators.loc['Manchester Wind', 'p_nom_set'] = 3000
@@ -55,23 +55,18 @@ n.madd('Store', ['store'], bus='storebus', e_nom=2000, e_nom_extendable=True,
        e_cyclic=True)
 
 # solve it with gurobi and validate
-nomopyomo.lopf(n, solver_name='gurobi', warmstart='/tmp/test-zbtllyyl.bas')
+opts = dict(alpha = 1.8)
+nomopyomo.lopf(n, solver_name='scs', keep_references=True, solver_options=opts)
+nomopyomo.test.check_constraints(n, 1)
 
-nomopyomo.test.check_nominal_bounds(n)
-nomopyomo.test.check_nodal_balance_constraint(n, tol=1e-1)
-nomopyomo.test.check_storage_unit_contraints(n, tol=1e-1)
-nomopyomo.test.check_store_contraints(n, tol=1e-1)
 
 # solve it with cbc and validate
 # nomopyomo.lopf(n, solver_name='cbc')
+# nomopyomo.test.check_constraints(n, 1)
 
-# nomopyomo.test.check_nominal_bounds(n)
-# nomopyomo.test.check_nodal_balance_constraint(n)
-# nomopyomo.test.check_storage_unit_contraints(n)
-# nomopyomo.test.check_store_contraints(n)
 
 # %%
 
-p = n.generators_t.p
-n.lopf(solver_name='gurobi')
-assert (p - n.generators_t.p).abs().max().max() <= 1e-1
+#p = n.generators_t.p
+#n.lopf(solver_name='gurobi')
+#assert (p - n.generators_t.p).abs().max().max() <= 1e-1
