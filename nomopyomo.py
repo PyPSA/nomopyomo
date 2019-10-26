@@ -454,10 +454,29 @@ def read_cbc(network,sol_filename,keep_files):
 
 def read_gurobi(network,sol_filename,keep_files):
     f = open(sol_filename,"r")
+
+
+    status = "ok"
+    termination_condition = "other"
+
     for i in range(23):
         data = f.readline()
+        s = "termination_condition: "
+        if data[:len(s)] == s:
+            termination_condition = data[len(s):].strip()
+            if "infeasible" in termination_condition:  #sometimes gurobi returns infeasibleOrUnbounded
+                termination_condition = "infeasible"
+        s = "objective: "
+        if termination_condition == "optimal" and data[:len(s)] == s:
+            network.objective = float(data[len(s):])
         logger.info(data)
     f.close()
+
+    if termination_condition != "optimal":
+        if not keep_files:
+            os.system("rm "+ sol_filename)
+        return status, termination_condition, None, None
+
     sol = pd.read_csv(sol_filename,header=None,skiprows=23,sep=":")
 
 
@@ -471,9 +490,6 @@ def read_gurobi(network,sol_filename,keep_files):
 
     if not keep_files:
        os.system("rm "+ sol_filename)
-
-    status = "ok"
-    termination_condition = "optimal"
 
     return status,termination_condition,variables_sol,constraints_dual
 
