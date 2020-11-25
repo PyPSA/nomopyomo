@@ -1,4 +1,16 @@
 
+
+**WARNING**: This repository is no longer under development and cannot
+be supported. The nomopyomo code has been incorporated into
+[PyPSA](https://github.com/PyPSA/PyPSA) and further developed
+there. To use it, pass the `network.lopf()` the `pyomo=False`
+argument:
+
+```python
+network.lopf(pyomo=False)
+```
+
+
 # nomopyomo - no more pyomo
 
 This script takes an unsolved [PyPSA](https://github.com/PyPSA/PyPSA)
